@@ -1,0 +1,19 @@
+{
+  "name": "relation-graph-startup-for-web-component",
+  "version": "0.0.1",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "start": "vite --host 0.0.0.0 --port 3000",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000"
+  },
+  "dependencies": {
+    "@relation-graph/web-components": "^3.0.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
+
