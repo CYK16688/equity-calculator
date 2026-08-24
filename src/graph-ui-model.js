@@ -29,6 +29,20 @@ export function nodeDisplayLabel(nodes, node) {
   return duplicateCount > 1 ? `${name} · #${shortNodeIdentity(node)}` : name;
 }
 
+export function nodeCanvasLabel(nodes, node) {
+  if (!node) return '';
+  const name = String(node.name || node.id || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/[\t ]+/g, ' ').trim())
+    .join('\n')
+    .trim();
+  const duplicateCount = (nodes || []).filter(candidate =>
+    normalizeName(candidate?.name) === normalizeName(node.name)
+  ).length;
+  return duplicateCount > 1 ? `${name} · #${shortNodeIdentity(node)}` : name;
+}
+
 export function zoomInScale(scale) {
   return Number(scale) * ZOOM_STEP;
 }

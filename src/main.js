@@ -13,6 +13,7 @@ import {
 import { calculateOwnershipQuery } from './ownership-query.js';
 import {
   graphLayerOrder,
+  nodeCanvasLabel,
   nodeDisplayLabel,
   suggestUniqueNodeName,
   zoomInScale,
@@ -935,7 +936,7 @@ function drawNode(stage, node) {
     'stroke-width': active ? '4' : '2',
     filter: active ? 'url(#node-shadow)' : ''
   }));
-  const lines = splitNodeName(nodeDisplayLabel(graphData.nodes, node));
+  const lines = splitNodeName(nodeCanvasLabel(graphData.nodes, node));
   const lineHeight = 19;
   const startY = height / 2 - ((lines.length - 1) * lineHeight) / 2 + 5;
   const text = createSvgElement('text', {

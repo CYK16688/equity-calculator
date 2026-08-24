@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildOwnershipTree,
   graphLayerOrder,
+  nodeCanvasLabel,
   nodeDisplayLabel,
   suggestUniqueNodeName,
   zoomInScale,
@@ -17,6 +18,12 @@ test('quick-add names remain unique and duplicate labels expose an identity', ()
   assert.equal(suggestUniqueNodeName(nodes, '新子公司'), '新子公司 2');
   assert.equal(nodeDisplayLabel(nodes, nodes[0]), '新子公司 · #abc123');
   assert.equal(nodeDisplayLabel(nodes, nodes[1]), '新子公司 · #9133');
+});
+
+test('canvas labels preserve explicit line breaks while list labels stay single-line', () => {
+  const node = { id: 'node-multiline', name: '第一行公司\n第二行名称', code: '' };
+  assert.equal(nodeCanvasLabel([node], node), '第一行公司\n第二行名称');
+  assert.equal(nodeDisplayLabel([node], node), '第一行公司 第二行名称');
 });
 
 test('zoom in and out are reciprocal', () => {
