@@ -16,6 +16,7 @@ import {
   calculateEquityHierarchyLevels,
   calculateEquityRelationRoutes,
   graphLayerOrder,
+  isGraphInteractionTarget,
   nodeCanvasLabel,
   nodeDisplayLabel,
   nodeTypePresentation,
@@ -2500,7 +2501,7 @@ importFile.addEventListener('change', async event => {
 });
 
 svg.addEventListener('pointerdown', event => {
-  if (event.button !== 0 || event.target.closest?.('.graph-node') || event.target.closest?.('.graph-relation')) return;
+  if (event.button !== 0 || isGraphInteractionTarget(event.target)) return;
   selected = null;
   renderNodeList();
   renderInspector();

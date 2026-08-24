@@ -67,6 +67,10 @@ export function graphLayerOrder(relationPathLayer, nodeLayer, relationLabelLayer
   return [relationPathLayer, nodeLayer, relationLabelLayer];
 }
 
+export function isGraphInteractionTarget(target) {
+  return Boolean(target?.closest?.('.graph-node, .graph-relation, .relation-label-group'));
+}
+
 export function calculateEquityHierarchyLevels(nodes, links) {
   const nodeIds = (Array.isArray(nodes) ? nodes : [])
     .map(node => String(node?.id || ''))

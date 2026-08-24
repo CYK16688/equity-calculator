@@ -5,6 +5,7 @@ import {
   buildOwnershipTree,
   calculateEquityHierarchyLevels,
   graphLayerOrder,
+  isGraphInteractionTarget,
   nodeCanvasLabel,
   nodeDisplayLabel,
   nodeTypePresentation,
@@ -180,6 +181,17 @@ test('relation labels render above nodes so ownership percentages remain clickab
   const nodes = { id: 'nodes' };
   const labels = { id: 'labels' };
   assert.deepEqual(graphLayerOrder(paths, nodes, labels), [paths, nodes, labels]);
+});
+
+test('ownership percentage labels do not start canvas panning', () => {
+  const target = matchingSelector => ({
+    closest: selector => selector.split(', ').includes(matchingSelector) ? {} : null
+  });
+
+  assert.equal(isGraphInteractionTarget(target('.graph-node')), true);
+  assert.equal(isGraphInteractionTarget(target('.graph-relation')), true);
+  assert.equal(isGraphInteractionTarget(target('.relation-label-group')), true);
+  assert.equal(isGraphInteractionTarget(target('.canvas-background')), false);
 });
 
 test('ownership tree preserves parent-child branches and marks cycles', () => {
