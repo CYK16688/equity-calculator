@@ -1,13 +1,21 @@
-# relation-graph-startup-for-web-component
+# 企业股权结构图编辑器
 
-A minimal Vite startup project for `@relation-graph/web-components`.
+可在本地浏览器运行的企业股权结构编辑工具，支持主体和持股关系编辑、股权比例校验、自动布局与吸附、任意主体间实际权益穿透、融资稀释测算、自定义水印及 JSON/图片导出。
 
-## Usage
+数据默认保存在浏览器本机存储中。
+
+## 本地运行
 
 ```bash
 npm install
 npm run dev
 ```
 
-The dev server runs on port `3000`.
+打开 <http://localhost:3000/>。
 
+## 检查与构建
+
+```bash
+npm test
+npm run build
+```

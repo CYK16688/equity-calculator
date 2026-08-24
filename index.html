@@ -1,19 +1,288 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>relation-graph startup for web component</title>
+    <meta name="description" content="可编辑、可离线运行的企业股权结构图编辑器" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%232f7bf1%22/><path d=%22M18 20h28M18 32h28M18 44h28%22 stroke=%22white%22 stroke-width=%226%22 stroke-linecap=%22round%22/></svg>" />
+    <title>企业股权结构图编辑器</title>
   </head>
   <body>
-    <div class="my-graph">
-      <relation-graph id="my-graph-component">
-        <div slot="view" class="view-slot">
-          <rg-mini-view></rg-mini-view>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">股</div>
+          <div>
+            <p class="eyebrow">OWNERSHIP STUDIO</p>
+            <h1>企业股权结构图编辑器</h1>
+          </div>
         </div>
-      </relation-graph>
-    </div>
+        <div class="header-actions">
+          <span class="save-status" id="save-status"><i></i> 已保存到本机</span>
+          <button class="quiet-button" id="undo" disabled title="撤销（⌘Z）">撤销</button>
+          <button class="quiet-button" id="redo" disabled title="重做（⇧⌘Z）">重做</button>
+          <button class="quiet-button" id="new-document">新建</button>
+          <button class="quiet-button" id="import-json">导入 JSON</button>
+          <button class="quiet-button" id="export-json">导出 JSON</button>
+          <button class="primary-button" id="export-image">导出图片</button>
+          <input id="import-file" type="file" accept="application/json,.json" hidden />
+        </div>
+      </header>
+
+      <section class="editor-workspace">
+        <aside class="data-sidebar">
+          <div class="sidebar-heading">
+            <div>
+              <p class="section-label">图谱数据</p>
+              <h2 id="sidebar-mode-title">主体清单</h2>
+            </div>
+            <button class="square-button" id="add-independent" title="新增独立主体" aria-label="新增独立主体">＋</button>
+          </div>
+          <div class="sidebar-primary-switch" role="tablist" aria-label="左侧功能切换">
+            <button id="sidebar-subjects" type="button" role="tab" aria-selected="true">主体清单</button>
+            <button id="sidebar-ownership-query" type="button" role="tab" aria-selected="false">权益查询</button>
+          </div>
+          <div class="subject-sidebar-view" id="subject-sidebar-view">
+            <label class="search-box">
+              <span aria-hidden="true">⌕</span>
+              <input id="node-search" type="search" placeholder="搜索企业或股东" />
+            </label>
+            <div class="sidebar-view-switch" role="group" aria-label="主体清单显示方式">
+              <button id="tree-view" class="active" type="button" aria-pressed="true">层级树</button>
+              <button id="flat-view" type="button" aria-pressed="false">全部清单</button>
+            </div>
+            <div class="node-list" id="node-list" aria-label="主体列表"></div>
+          </div>
+          <div class="query-sidebar-view" id="query-sidebar-view" hidden>
+            <section class="ownership-query-card" id="ownership-query-card" aria-label="主体间实际权益查询">
+              <div class="ownership-query-heading">
+                <div>
+                  <p class="section-label">双点穿透</p>
+                  <h3>点击两个主体查询权益</h3>
+                </div>
+                <button type="button" id="clear-ownership-query">重选</button>
+              </div>
+              <p class="ownership-query-summary">依次点击画布中的任意两个主体：先选权益起点，再选目标公司。</p>
+              <div class="ownership-query-endpoints">
+                <button class="ownership-query-endpoint" id="pick-ownership-query-source" type="button" data-role="source">
+                  <b>A</b>
+                  <span><small>权益起点</small><strong id="ownership-query-source-name">点击画布选择</strong></span>
+                </button>
+                <i aria-hidden="true">→</i>
+                <button class="ownership-query-endpoint" id="pick-ownership-query-target" type="button" data-role="target">
+                  <b>B</b>
+                  <span><small>目标公司</small><strong id="ownership-query-target-name">等待选择 A</strong></span>
+                </button>
+              </div>
+              <div class="ownership-query-prompt" id="ownership-query-prompt">第 1 步：点击画布中的权益主体</div>
+              <div class="ownership-query-result" id="ownership-query-result" data-state="empty"></div>
+            </section>
+          </div>
+          <div class="sidebar-footer">
+            <span><b id="node-count">0</b> 个主体</span>
+            <span><b id="link-count">0</b> 条持股关系</span>
+          </div>
+        </aside>
+
+        <section class="graph-panel">
+          <div class="canvas-toolbar" aria-label="图谱画布工具栏">
+            <button id="zoom-out" title="缩小">−</button>
+            <span id="zoom-value">100%</span>
+            <button id="zoom-in" title="放大">＋</button>
+            <i></i>
+            <button id="fit-view">适应画布</button>
+            <button id="auto-layout">自动布局</button>
+            <button id="toggle-snap" class="active" aria-pressed="true" title="拖动节点时显示参考线并自动吸附">磁吸：开</button>
+            <button id="toggle-watermark">隐藏水印</button>
+            <button id="edit-watermark" aria-expanded="false">水印内容</button>
+          </div>
+          <form class="watermark-editor" id="watermark-editor" hidden>
+            <label for="watermark-text">自定义水印内容</label>
+            <div class="watermark-editor-row">
+              <input id="watermark-text" type="text" maxlength="60" autocomplete="off" aria-label="自定义水印内容">
+              <button type="button" id="reset-watermark">恢复默认</button>
+              <button type="submit" class="primary-button">完成</button>
+            </div>
+            <small>输入时实时预览，按 Enter、点击完成或离开编辑框后自动保存。</small>
+          </form>
+          <div class="canvas-wrap" id="canvas-wrap">
+            <svg id="equity-graph" role="img" aria-label="可编辑企业股权结构关系图"></svg>
+            <form class="inline-node-editor" id="inline-node-editor" hidden>
+              <textarea id="inline-node-name" aria-label="直接编辑节点名称" rows="3"></textarea>
+              <span>Enter 保存 · Shift+Enter 换行 · Esc 取消</span>
+            </form>
+            <form class="inline-relation-editor" id="inline-relation-editor" hidden>
+              <label>
+                <input id="inline-relation-percent" type="number" min="0" max="100" step="0.0001" aria-label="直接编辑持股比例">
+                <b>%</b>
+              </label>
+              <span>Enter 保存 · Esc 取消</span>
+            </form>
+            <div class="canvas-empty" id="canvas-empty" hidden>
+              <div class="empty-icon">＋</div>
+              <h2>创建第一个主体</h2>
+              <p>从企业、股东或投资平台开始搭建股权关系。</p>
+              <button class="primary-button" id="empty-add">新增主体</button>
+            </div>
+            <div class="canvas-hint" id="canvas-hint">拖动节点底部圆点建立关系 · 双击节点改名 · 点击比例修改</div>
+          </div>
+        </section>
+
+        <aside class="inspector">
+          <div class="inspector-empty" id="inspector-empty">
+            <div class="selection-glyph">↖</div>
+            <h2>选择一个主体或关系</h2>
+            <p>点击画布节点修改企业信息；点击持股比例修改关系。</p>
+          </div>
+
+          <form class="inspector-form" id="node-editor" hidden>
+            <div class="inspector-heading">
+              <div>
+                <p class="section-label">主体属性</p>
+                <h2 id="node-editor-title">编辑主体</h2>
+              </div>
+              <span class="type-chip" id="node-id-chip"></span>
+            </div>
+            <label>名称<textarea id="edit-name" rows="3" required></textarea></label>
+            <div class="form-grid">
+              <label>主体类型
+                <select id="edit-type">
+                  <option>目标企业</option>
+                  <option>企业股东</option>
+                  <option>自然人股东</option>
+                  <option>控股平台</option>
+                  <option>全资子公司</option>
+                  <option>控股子公司</option>
+                  <option>参股企业</option>
+                  <option>其他主体</option>
+                </select>
+              </label>
+              <label>角标
+                <select id="edit-ribbon">
+                  <option value="">无</option>
+                  <option value="controller">实际控制人</option>
+                  <option value="risk">风险提示</option>
+                </select>
+              </label>
+            </div>
+            <label>统一代码 / 标识<input id="edit-code" type="text" /></label>
+            <label>股东名册口径
+              <select id="edit-ownership-scope">
+                <option value="partial">仅录入已知股东（允许不足 100%）</option>
+                <option value="complete">完整股东名册（必须等于 100%）</option>
+              </select>
+            </label>
+            <label>备注<textarea id="edit-note" rows="3"></textarea></label>
+            <label class="toggle-row"><input id="edit-root" type="checkbox" /><span>设为中心目标企业</span></label>
+            <button class="primary-button wide" type="submit">保存主体修改</button>
+
+            <section class="ownership-calculator" aria-label="股权自动计算">
+              <div class="calculator-heading">
+                <div>
+                  <p class="section-label">自动计算</p>
+                  <h3>股权校验与穿透</h3>
+                </div>
+                <strong id="direct-total">0%</strong>
+              </div>
+              <div class="calculation-status" id="calculation-status"></div>
+              <div class="calculation-block">
+                <h4>直接股东</h4>
+                <div id="direct-holdings-list" class="holding-list"></div>
+              </div>
+              <div class="calculation-block">
+                <h4>已知最终股东（自动穿透）</h4>
+                <div id="ultimate-holdings-list" class="holding-list"></div>
+              </div>
+            </section>
+
+            <section class="financing-card" id="financing-card" aria-label="股权融资模拟">
+              <div class="financing-heading">
+                <div>
+                  <p class="section-label">资本操作</p>
+                  <h3>纯增资融资</h3>
+                </div>
+                <button type="button" id="toggle-financing" aria-expanded="false">新建融资</button>
+              </div>
+              <p class="financing-summary">本轮投资人认购新增股权，原股东按同一系数等比例稀释。</p>
+              <div class="financing-workspace" id="financing-workspace" hidden>
+                <div class="financing-gate" id="financing-gate" data-tone="neutral"></div>
+
+                <div class="form-grid">
+                  <label>计算方式
+                    <select id="finance-mode">
+                      <option value="percent">直接填写投后比例</option>
+                      <option value="valuation">按估值与投资额计算</option>
+                    </select>
+                  </label>
+                  <label>融资轮次<input id="finance-round" type="text" placeholder="例如 A 轮" /></label>
+                </div>
+
+                <label>本轮投资人
+                  <select id="finance-investor"></select>
+                </label>
+                <label id="finance-new-investor-field">新投资人名称<input id="finance-new-investor-name" type="text" placeholder="例如 新投资基金" /></label>
+
+                <div id="finance-percent-fields">
+                  <label>投资人目标投后持股（%）<input id="finance-post-percent" type="number" min="0.01" max="99.99" step="0.01" value="20" /></label>
+                </div>
+                <div class="form-grid" id="finance-valuation-fields" hidden>
+                  <label>投前股权估值<input id="finance-pre-money" type="number" min="0.01" step="0.01" placeholder="例如 8000" /></label>
+                  <label>投资额<input id="finance-investment" type="number" min="0.01" step="0.01" placeholder="例如 2000" /></label>
+                  <label class="form-grid-wide">币种（两项须一致）
+                    <select id="finance-currency">
+                      <option value="CNY">人民币 CNY</option>
+                      <option value="USD">美元 USD</option>
+                      <option value="HKD">港币 HKD</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label>测算记录日期<input id="finance-date" type="date" /></label>
+
+                <div class="financing-preview" id="financing-preview" data-state="empty">
+                  <div class="financing-preview-heading">
+                    <span>投前 → 投后</span>
+                    <strong id="finance-result-percent">—</strong>
+                  </div>
+                  <div class="financing-preview-table" id="financing-preview-table"></div>
+                  <p id="financing-preview-note">填写融资参数后显示等比例稀释结果。</p>
+                </div>
+
+                <button class="primary-button wide" id="apply-financing" type="button">应用测算并更新股权</button>
+              </div>
+
+              <div class="financing-history" id="financing-history"></div>
+            </section>
+
+            <div class="relation-actions">
+              <p class="section-label">快速建立关系</p>
+              <div class="split-buttons">
+                <button type="button" id="add-shareholder">＋ 新增上游股东</button>
+                <button type="button" id="add-subsidiary">＋ 新增下游子公司</button>
+              </div>
+            </div>
+            <button class="danger-button" id="delete-node" type="button">删除该主体及相关关系</button>
+          </form>
+
+          <form class="inspector-form" id="link-editor" hidden>
+            <div class="inspector-heading">
+              <div>
+                <p class="section-label">持股关系</p>
+                <h2>编辑关系</h2>
+              </div>
+              <span class="type-chip">RELATION</span>
+            </div>
+            <label>股东 / 上游主体<select id="edit-from"></select></label>
+            <label>被投企业 / 下游主体<select id="edit-to"></select></label>
+            <label>持股比例（%）<input id="edit-percent" type="number" min="0" max="100" step="0.01" placeholder="例如 60" required /></label>
+            <button class="primary-button wide" type="submit">保存关系修改</button>
+            <button class="danger-button" id="delete-link" type="button">删除该持股关系</button>
+          </form>
+        </aside>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
-
