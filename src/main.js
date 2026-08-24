@@ -1759,7 +1759,7 @@ function applyFinancing() {
   afterNames.set(actualInvestorId, plan.investorName);
 
   financingOpenNodeId = null;
-  commit(`${round}融资测算已应用，原股东已等比例稀释`, () => {
+  commitWithAutoLayout(`${round}融资测算已应用，股权图已自动重排`, () => {
     if (plan.isNewInvestor) {
       const relatedCount = graphData.links.filter(link => link.to === company.id).length;
       graphData.nodes.push({
@@ -2035,13 +2035,13 @@ function addStandaloneNode() {
   if (!canEditGraph()) return;
   const id = generateId('node');
   const name = suggestUniqueNodeName(graphData.nodes, '新主体');
-  commit('已新增独立主体', () => {
+  commitWithAutoLayout('已新增独立主体并自动布局', () => {
     graphData.nodes.push({
       id, name, type: '其他主体', code: '', note: '', root: graphData.nodes.length === 0,
       ownershipScope: 'partial', ribbon: null, x: 650, y: 390
     });
+    setSelectedNodes([id], id);
   });
-  selectNode(id);
   document.getElementById('edit-name').focus();
   document.getElementById('edit-name').select();
 }
@@ -2069,7 +2069,7 @@ function addConnectedNode(direction) {
     x: Math.max(20, target.x + offset),
     y: Math.max(20, target.y + (upstream ? -205 : 220))
   };
-  commit(upstream ? '已新增上游股东' : '已新增下游子公司', () => {
+  commitWithAutoLayout(upstream ? '已新增上游股东并自动布局' : '已新增下游子公司并自动布局', () => {
     graphData.nodes.push(newNode);
     graphData.links.push({
       id: generateId('relation'),
@@ -2077,8 +2077,8 @@ function addConnectedNode(direction) {
       to: upstream ? target.id : id,
       percent: upstream ? '0%' : '100%'
     });
+    setSelectedNodes([id], id);
   });
-  selectNode(id);
   document.getElementById('edit-name').focus();
   document.getElementById('edit-name').select();
 }
@@ -2112,38 +2112,45 @@ function deleteSelectedNode() {
   });
 }
 
+function applyAutomaticLayout() {
+  graphData.links.forEach(link => {
+    delete link.routeOrder;
+    delete link.sourcePort;
+    delete link.targetPort;
+    delete link.laneSlot;
+    delete link.labelTier;
+    delete link.corridorSlot;
+  });
+  const layoutNodes = graphData.nodes.map(node => {
+    const size = nodeDimensions(node);
+    return { ...node, layoutWidth: size.width, layoutHeight: size.height };
+  });
+  const { positions } = calculateEquityAutoLayout(layoutNodes, graphData.links, {
+    centerX: 760,
+    topY: 65,
+    nodeGap: 64,
+    layerGap: 117,
+    minX: 20
+  });
+  graphData.nodes.forEach(node => {
+    const position = positions.get(String(node.id));
+    if (!position) return;
+    node.x = position.x;
+    node.y = position.y;
+  });
+}
+
+function commitWithAutoLayout(message, mutate) {
+  commit(message, () => {
+    mutate();
+    applyAutomaticLayout();
+    updateFitViewState();
+  }, { includeView: true });
+}
+
 function autoLayout() {
   if (!graphData.nodes.length) return;
-  commit('已自动整理图谱布局', () => {
-    // Explicit automatic layout is the one operation allowed to globally
-    // re-optimise ports. Ordinary drag-created relations keep existing hints.
-    graphData.links.forEach(link => {
-      delete link.routeOrder;
-      delete link.sourcePort;
-      delete link.targetPort;
-      delete link.laneSlot;
-      delete link.labelTier;
-      delete link.corridorSlot;
-    });
-    const layoutNodes = graphData.nodes.map(node => {
-      const size = nodeDimensions(node);
-      return { ...node, layoutWidth: size.width, layoutHeight: size.height };
-    });
-    const { positions } = calculateEquityAutoLayout(layoutNodes, graphData.links, {
-      centerX: 760,
-      topY: 65,
-      nodeGap: 64,
-      layerGap: 117,
-      minX: 20
-    });
-    graphData.nodes.forEach(node => {
-      const position = positions.get(String(node.id));
-      if (!position) return;
-      node.x = position.x;
-      node.y = position.y;
-    });
-  }, { includeView: true });
-  fitView();
+  commitWithAutoLayout('已自动整理图谱布局', () => {});
 }
 
 function clientToSvg(clientX, clientY) {
@@ -2173,12 +2180,11 @@ function setScale(next, centerX = VIEW_WIDTH / 2, centerY = VIEW_HEIGHT / 2) {
   renderGraph();
 }
 
-function fitView() {
+function updateFitViewState() {
   if (!graphData.nodes.length) {
     view.scale = .82;
     view.x = 110;
     view.y = 60;
-    renderGraph();
     return;
   }
   const boxes = graphData.nodes.map(node => {
@@ -2194,6 +2200,10 @@ function fitView() {
   view.scale = Math.min(1.18, Math.max(.38, Math.min(VIEW_WIDTH / width, VIEW_HEIGHT / height)));
   view.x = VIEW_WIDTH / 2 - ((left + right) / 2) * view.scale;
   view.y = VIEW_HEIGHT / 2 - ((top + bottom) / 2) * view.scale;
+}
+
+function fitView() {
+  updateFitViewState();
   renderGraph();
 }
 
