@@ -685,7 +685,7 @@ test('routing hints persist lane and label identities for later node drags', () 
   });
 });
 
-test('dragging one node leaves every unrelated route and label unchanged', () => {
+test('dragging one node leaves routes outside its shared source and target bundles unchanged', () => {
   const nodes = [
     ...Array.from({ length: 6 }, (_, index) => ({
       id: `source-${index}`,
@@ -694,7 +694,7 @@ test('dragging one node leaves every unrelated route and label unchanged', () =>
       width: 160,
       height: 88
     })),
-    ...Array.from({ length: 3 }, (_, index) => ({
+    ...Array.from({ length: 4 }, (_, index) => ({
       id: `target-${index}`,
       x: 150 + index * 420,
       y: 340,
@@ -707,13 +707,14 @@ test('dragging one node leaves every unrelated route and label unchanged', () =>
     { id: 'source-0-target-1', from: 'source-0', to: 'target-1', percent: '30%' },
     { id: 'source-0-target-2', from: 'source-0', to: 'target-2', percent: '50%' },
     { id: 'source-1-target-0', from: 'source-1', to: 'target-0', percent: '40%' },
-    { id: 'source-1-target-1', from: 'source-1', to: 'target-1', percent: '60%' }
+    { id: 'source-1-target-1', from: 'source-1', to: 'target-1', percent: '60%' },
+    { id: 'source-5-target-3', from: 'source-5', to: 'target-3', percent: '100%' }
   ]);
   const before = calculateEquityRelationRoutes(nodes, links);
   const movedNodes = nodes.map(node => node.id === 'source-0' ? { ...node, x: 1150 } : node);
   const after = calculateEquityRelationRoutes(movedNodes, links);
 
-  ['source-1-target-0', 'source-1-target-1'].forEach(linkId => {
+  ['source-5-target-3'].forEach(linkId => {
     const beforeRoute = relationRoute(before, linkId);
     const afterRoute = relationRoute(after, linkId);
     assert.equal(afterRoute.pathData, beforeRoute.pathData, `${linkId} is unrelated to the dragged node`);
@@ -765,6 +766,112 @@ test('dragging a target keeps each percentage label on its own final stem', () =
       `${linkId} label should not move with another target`
     );
   });
+});
+
+test('reordering sibling targets repairs only their shared fan-out ports and removes crossings', () => {
+  const source = { id: 'parent', x: 600, y: 0, width: 440, height: 100 };
+  const initialTargets = Array.from({ length: 5 }, (_, index) => ({
+    id: `child-${index}`,
+    x: index * 320,
+    y: 360,
+    width: 240,
+    height: 100
+  }));
+  const unrelatedNodes = [
+    { id: 'other-parent', x: 1700, y: 0, width: 220, height: 100 },
+    { id: 'other-child', x: 1700, y: 360, width: 220, height: 100 }
+  ];
+  const initialNodes = [source, ...initialTargets, ...unrelatedNodes];
+  const links = assignEquityRoutingHints(initialNodes, [
+    ...initialTargets.map((target, index) => ({
+      id: `parent-child-${index}`,
+      from: 'parent',
+      to: target.id,
+      percent: '20%'
+    })),
+    { id: 'unrelated', from: 'other-parent', to: 'other-child', percent: '100%' }
+  ]);
+  const before = calculateEquityRelationRoutes(initialNodes, links);
+  const reorderedIds = [4, 3, 2, 1, 0];
+  const reorderedNodes = [
+    source,
+    ...reorderedIds.map((targetIndex, position) => ({
+      ...initialTargets[targetIndex],
+      x: position * 320
+    })),
+    ...unrelatedNodes
+  ];
+  const after = calculateEquityRelationRoutes(reorderedNodes, links);
+  const fanOutRoutes = initialTargets.map((_, index) =>
+    relationRoute(after, `parent-child-${index}`)
+  );
+  const routesByTargetX = [...fanOutRoutes].sort((left, right) => left.endX - right.endX);
+  routesByTargetX.slice(1).forEach((route, index) => {
+    assert.ok(
+      routesByTargetX[index].startX < route.startX,
+      'source ports should follow the current left-to-right target order'
+    );
+  });
+  const crossings = [];
+  fanOutRoutes.forEach((leftRoute, leftIndex) => {
+    fanOutRoutes.slice(leftIndex + 1).forEach(rightRoute => {
+      leftRoute.segments.forEach(leftSegment => {
+        rightRoute.segments.forEach(rightSegment => {
+          if (routeSegmentsCross(leftSegment, rightSegment)
+            || horizontalSegmentsOverlap(leftSegment, rightSegment)) {
+            crossings.push([leftRoute.relation.id, rightRoute.relation.id]);
+          }
+        });
+      });
+    });
+  });
+
+  assert.deepEqual(crossings, [], 'sibling fan-out routes should remain crossing-free after horizontal reordering');
+  assert.equal(
+    relationRoute(after, 'unrelated').pathData,
+    relationRoute(before, 'unrelated').pathData,
+    'repairing one fan-out group must not move an unrelated route'
+  );
+  assert.deepEqual(
+    relationRoute(after, 'unrelated').labelAnchor,
+    relationRoute(before, 'unrelated').labelAnchor,
+    'repairing one fan-out group must not move an unrelated percentage label'
+  );
+});
+
+test('fan-out lane routing ignores relation array order and minimizes geometric crossings', () => {
+  const nodes = [
+    { id: 'parent', x: 600, y: 0, width: 440, height: 100 },
+    { id: 'foshan', x: 0, y: 360, width: 240, height: 100 },
+    { id: 'hangzhou', x: 320, y: 360, width: 240, height: 100 },
+    { id: 'research', x: 640, y: 360, width: 240, height: 100 },
+    { id: 'shanghai', x: 960, y: 360, width: 240, height: 100 },
+    { id: 'regional-sales', x: 1280, y: 360, width: 240, height: 100 }
+  ];
+  const links = assignEquityRoutingHints(nodes, [
+    { id: 'parent-shanghai', from: 'parent', to: 'shanghai', percent: '20%' },
+    { id: 'parent-hangzhou', from: 'parent', to: 'hangzhou', percent: '20%' },
+    { id: 'parent-regional-sales', from: 'parent', to: 'regional-sales', percent: '20%' },
+    { id: 'parent-research', from: 'parent', to: 'research', percent: '20%' },
+    { id: 'parent-foshan', from: 'parent', to: 'foshan', percent: '20%' }
+  ]);
+  const result = calculateEquityRelationRoutes(nodes, links);
+  const routes = links.map(link => relationRoute(result, link.id));
+  const crossings = [];
+  routes.forEach((leftRoute, leftIndex) => {
+    routes.slice(leftIndex + 1).forEach(rightRoute => {
+      leftRoute.segments.forEach(leftSegment => {
+        rightRoute.segments.forEach(rightSegment => {
+          if (routeSegmentsCross(leftSegment, rightSegment)
+            || horizontalSegmentsOverlap(leftSegment, rightSegment)) {
+            crossings.push([leftRoute.relation.id, rightRoute.relation.id]);
+          }
+        });
+      });
+    });
+  });
+
+  assert.deepEqual(crossings, [], 'geometry, not relation insertion order, should determine fan-out lanes');
 });
 
 test('dragging one long relation source does not reassign another long route corridor', () => {

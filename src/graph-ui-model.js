@@ -131,6 +131,11 @@ export function assignEquityRoutingHints(nodes, links) {
         });
         return;
       }
+      const existing = ordered.filter(link => link[portKey] !== null);
+      const orderedPorts = existing.map(link => link[portKey]).sort((left, right) => left - right);
+      existing.forEach((link, index) => {
+        link[portKey] = orderedPorts[index];
+      });
       ordered.forEach((link, index) => {
         if (link[portKey] !== null) return;
         const previous = [...ordered.slice(0, index)].reverse()
@@ -209,6 +214,36 @@ export function assignEquityRoutingHints(nodes, links) {
         occupiedByLane[laneSlot].push(interval);
         link.laneSlot = laneSlot;
       });
+
+    const newlyRouted = relations.filter(link => resetRoutingIdentity.has(link));
+    if (!newlyRouted.length) return;
+    const provisionalRoutes = relations.map(link => {
+      const geometry = routeGeometry.get(link.id);
+      return {
+        relation: link,
+        startX: geometry.startX,
+        endX: geometry.endX,
+        startY: geometry.startY,
+        endY: geometry.targetY,
+        laneIndex: link.laneSlot
+      };
+    });
+    const sourceBottom = Math.max(...provisionalRoutes.map(route => route.startY));
+    const targetTop = Math.min(...provisionalRoutes.map(route => route.endY));
+    const forward = targetTop > sourceBottom;
+    newlyRouted.forEach(link => {
+      const route = provisionalRoutes.find(candidate => candidate.relation.id === link.id);
+      const maxLane = Math.max(0, ...provisionalRoutes.map(candidate => candidate.laneIndex));
+      let best = null;
+      for (let lane = 0; lane <= maxLane + newlyRouted.length + 2; lane += 1) {
+        route.laneIndex = lane;
+        const conflicts = routeLaneConflictIds(provisionalRoutes, forward).size;
+        const score = [conflicts, lane];
+        if (!best || compareRouteLaneScores(score, best.score) < 0) best = { lane, score };
+      }
+      route.laneIndex = best.lane;
+      link.laneSlot = best.lane;
+    });
   });
 
   // Long cross-layer routes must not borrow a corridor selected by whichever
@@ -842,7 +877,16 @@ function routeIntervalsConflict(left, right) {
 }
 
 function assignRouteLanes(orderedRoutes) {
+  return assignRouteLanesWithLocked(orderedRoutes, []);
+}
+
+function assignRouteLanesWithLocked(orderedRoutes, lockedRoutes) {
   const occupiedByLane = [];
+  lockedRoutes.forEach(route => {
+    const lane = Math.max(0, Math.floor(Number(route.laneIndex) || 0));
+    if (!occupiedByLane[lane]) occupiedByLane[lane] = [];
+    occupiedByLane[lane].push(routeHorizontalInterval(route));
+  });
   orderedRoutes.forEach(route => {
     const interval = routeHorizontalInterval(route);
     let lane = 0;
@@ -853,12 +897,125 @@ function assignRouteLanes(orderedRoutes) {
   });
 }
 
+function routeLaneCrossingIds(routes, forward) {
+  const crossed = new Set();
+  routes.forEach(horizontalRoute => {
+    routes.forEach(verticalRoute => {
+      if (horizontalRoute === verticalRoute) return;
+      const crossesSourceStem = horizontalRoute.laneIndex < verticalRoute.laneIndex
+        && pointInsideRouteInterval(horizontalRoute, verticalRoute.startX);
+      const crossesTargetStem = forward
+        ? horizontalRoute.laneIndex > verticalRoute.laneIndex
+          && pointInsideRouteInterval(horizontalRoute, verticalRoute.endX)
+        : horizontalRoute.laneIndex < verticalRoute.laneIndex
+          && pointInsideRouteInterval(horizontalRoute, verticalRoute.endX);
+      if (!crossesSourceStem && !crossesTargetStem) return;
+      crossed.add(horizontalRoute.relation.id);
+      crossed.add(verticalRoute.relation.id);
+    });
+  });
+  return crossed;
+}
+
+function routeLaneConflictIds(routes, forward) {
+  const conflicted = routeLaneCrossingIds(routes, forward);
+  routes.forEach((left, leftIndex) => {
+    routes.slice(leftIndex + 1).forEach(right => {
+      if (left.laneIndex !== right.laneIndex
+        || !routeIntervalsConflict(routeHorizontalInterval(left), routeHorizontalInterval(right))) return;
+      conflicted.add(left.relation.id);
+      conflicted.add(right.relation.id);
+    });
+  });
+  return conflicted;
+}
+
+function assignPlanarRouteLanes(routes, forward, preferredLanes = null) {
+  const routeById = new Map(routes.map(route => [route.relation.id, route]));
+  const adjacency = new Map(routes.map(route => [route.relation.id, new Set()]));
+  const addConstraint = (shallower, deeper) => {
+    if (shallower === deeper) return;
+    adjacency.get(shallower)?.add(deeper);
+  };
+  routes.forEach(horizontalRoute => {
+    routes.forEach(verticalRoute => {
+      if (horizontalRoute === verticalRoute) return;
+      if (pointInsideRouteInterval(horizontalRoute, verticalRoute.startX)) {
+        addConstraint(verticalRoute.relation.id, horizontalRoute.relation.id);
+      }
+      if (!pointInsideRouteInterval(horizontalRoute, verticalRoute.endX)) return;
+      if (forward) addConstraint(horizontalRoute.relation.id, verticalRoute.relation.id);
+      else addConstraint(verticalRoute.relation.id, horizontalRoute.relation.id);
+    });
+  });
+  const hasPath = (from, to) => {
+    const pending = [from];
+    const visited = new Set();
+    while (pending.length) {
+      const current = pending.pop();
+      if (current === to) return true;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      adjacency.get(current)?.forEach(next => pending.push(next));
+    }
+    return false;
+  };
+  routes.forEach((left, leftIndex) => {
+    routes.slice(leftIndex + 1).forEach(right => {
+      if (!routeIntervalsConflict(routeHorizontalInterval(left), routeHorizontalInterval(right))) return;
+      const leftId = left.relation.id;
+      const rightId = right.relation.id;
+      if (hasPath(leftId, rightId) || hasPath(rightId, leftId)) return;
+      const leftPreferred = preferredLanes?.get(leftId);
+      const rightPreferred = preferredLanes?.get(rightId);
+      const leftSpan = Math.abs(left.startX - left.endX);
+      const rightSpan = Math.abs(right.startX - right.endX);
+      const leftFirst = Number.isFinite(leftPreferred) && Number.isFinite(rightPreferred)
+        && leftPreferred !== rightPreferred
+        ? leftPreferred < rightPreferred
+        : leftSpan !== rightSpan
+          ? leftSpan > rightSpan
+          : leftId.localeCompare(rightId) < 0;
+      addConstraint(leftFirst ? leftId : rightId, leftFirst ? rightId : leftId);
+    });
+  });
+  const indegree = new Map(routes.map(route => [route.relation.id, 0]));
+  adjacency.forEach(targets => targets.forEach(target => indegree.set(target, indegree.get(target) + 1)));
+  const ready = [...routes]
+    .filter(route => indegree.get(route.relation.id) === 0)
+    .sort((left, right) => left.relation.id.localeCompare(right.relation.id));
+  const order = [];
+  while (ready.length) {
+    const route = ready.shift();
+    order.push(route);
+    adjacency.get(route.relation.id).forEach(targetId => {
+      indegree.set(targetId, indegree.get(targetId) - 1);
+      if (indegree.get(targetId) !== 0) return;
+      ready.push(routeById.get(targetId));
+      ready.sort((left, right) => left.relation.id.localeCompare(right.relation.id));
+    });
+  }
+  if (order.length !== routes.length) return false;
+  const lanes = new Map(routes.map(route => {
+    const preferred = preferredLanes?.get(route.relation.id);
+    return [route.relation.id, Number.isFinite(preferred) && preferred >= 0 ? preferred : 0];
+  }));
+  order.forEach(route => {
+    const lane = lanes.get(route.relation.id);
+    adjacency.get(route.relation.id).forEach(targetId => {
+      lanes.set(targetId, Math.max(lanes.get(targetId), lane + 1));
+    });
+  });
+  routes.forEach(route => { route.laneIndex = lanes.get(route.relation.id); });
+  return routeLaneConflictIds(routes, forward).size === 0;
+}
+
 function pointInsideRouteInterval(route, x) {
   const interval = routeHorizontalInterval(route);
   return x > interval.left && x < interval.right;
 }
 
-function routeLaneScore(routes, forward) {
+function routeLaneScore(routes, forward, preferredLanes = null) {
   let crossings = 0;
   routes.forEach(horizontalRoute => {
     routes.forEach(verticalRoute => {
@@ -871,9 +1028,15 @@ function routeLaneScore(routes, forward) {
         && pointInsideRouteInterval(horizontalRoute, verticalRoute.endX)) crossings += 1;
     });
   });
+  const laneChanges = preferredLanes
+    ? routes.reduce((total, route) =>
+      total + (route.laneIndex === preferredLanes.get(route.relation.id) ? 0 : 1), 0)
+    : 0;
   const maxLane = Math.max(0, ...routes.map(route => route.laneIndex));
   const totalLaneDepth = routes.reduce((total, route) => total + route.laneIndex, 0);
-  return [crossings, maxLane, totalLaneDepth];
+  return preferredLanes
+    ? [crossings, laneChanges, maxLane, totalLaneDepth]
+    : [crossings, maxLane, totalLaneDepth];
 }
 
 function compareRouteLaneScores(left, right) {
@@ -892,40 +1055,48 @@ function optimizeBandRouteLanes(bandRoutes, forward) {
         ? Math.floor(savedLane)
         : 0;
     });
-    return;
+    return false;
   }
-  if (bandRoutes.every(route => route.relation.laneSlot !== null
+  const hasStableLanes = bandRoutes.every(route => route.relation.laneSlot !== null
     && route.relation.laneSlot !== ''
     && Number.isFinite(Number(route.relation.laneSlot))
-    && Number(route.relation.laneSlot) >= 0)) {
+    && Number(route.relation.laneSlot) >= 0);
+  let preferredLanes = null;
+  let routesToOptimize = bandRoutes;
+  let lockedRoutes = [];
+  if (hasStableLanes) {
     bandRoutes.forEach(route => {
       route.laneIndex = Math.floor(Number(route.relation.laneSlot));
     });
-    return;
+    const crossingIds = routeLaneConflictIds(bandRoutes, forward);
+    if (!crossingIds.size) return false;
+    preferredLanes = new Map(bandRoutes.map(route => [route.relation.id, route.laneIndex]));
+    routesToOptimize = bandRoutes.filter(route => crossingIds.has(route.relation.id));
+    lockedRoutes = bandRoutes.filter(route => !crossingIds.has(route.relation.id));
   }
-  if (bandRoutes.every(route => Number.isFinite(Number(route.relation.routeOrder)))) {
-    assignRouteLanes([...bandRoutes].sort((left, right) =>
-      Number(left.relation.routeOrder) - Number(right.relation.routeOrder)
-      || left.relation.id.localeCompare(right.relation.id)
-    ));
-    return;
-  }
-  let best = null;
+  const lanesBeforePlanarRepair = new Map(bandRoutes.map(route => [route.relation.id, route.laneIndex]));
+  if (assignPlanarRouteLanes(bandRoutes, forward, preferredLanes)) return true;
+  bandRoutes.forEach(route => { route.laneIndex = lanesBeforePlanarRepair.get(route.relation.id); });
+  let best = preferredLanes ? {
+    score: routeLaneScore(bandRoutes, forward, preferredLanes),
+    signature: '',
+    lanes: new Map(routesToOptimize.map(route => [route.relation.id, route.laneIndex]))
+  } : null;
   const evaluate = order => {
-    assignRouteLanes(order);
-    const score = routeLaneScore(bandRoutes, forward);
+    assignRouteLanesWithLocked(order, lockedRoutes);
+    const score = routeLaneScore(bandRoutes, forward, preferredLanes);
     const signature = order.map(route => route.relation.id).join('\u0000');
     if (!best || compareRouteLaneScores(score, best.score) < 0
       || (compareRouteLaneScores(score, best.score) === 0 && signature < best.signature)) {
       best = {
         score,
         signature,
-        lanes: new Map(bandRoutes.map(route => [route.relation.id, route.laneIndex]))
+        lanes: new Map(routesToOptimize.map(route => [route.relation.id, route.laneIndex]))
       };
     }
     return score;
   };
-  const stable = [...bandRoutes].sort((left, right) => left.relation.id.localeCompare(right.relation.id));
+  const stable = [...routesToOptimize].sort((left, right) => left.relation.id.localeCompare(right.relation.id));
 
   if (stable.length <= 7) {
     const visit = (prefix, remaining) => {
@@ -975,7 +1146,12 @@ function optimizeBandRouteLanes(bandRoutes, forward) {
     });
   }
 
-  bandRoutes.forEach(route => { route.laneIndex = best.lanes.get(route.relation.id); });
+  routesToOptimize.forEach(route => { route.laneIndex = best.lanes.get(route.relation.id); });
+  const repaired = routeLaneConflictIds(bandRoutes, forward).size === 0;
+  if (!repaired && preferredLanes) {
+    bandRoutes.forEach(route => { route.laneIndex = preferredLanes.get(route.relation.id); });
+  }
+  return repaired;
 }
 
 /**
@@ -1022,6 +1198,28 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     || left.id.localeCompare(right.id)
   ));
 
+  const effectivePorts = (relations, portKey) => {
+    const savedPorts = relations.map(relation => Number(relation[portKey]));
+    const validPorts = savedPorts.every(port => Number.isFinite(port) && port > 0 && port < 1);
+    const uniquePorts = validPorts && new Set(savedPorts.map(port => port.toFixed(12))).size === relations.length;
+    const orderedPorts = uniquePorts
+      ? [...savedPorts].sort((left, right) => left - right)
+      : relations.map((_, index) => (index + 1) / (relations.length + 1));
+    return new Map(relations.map((relation, index) => [relation.id, orderedPorts[index]]));
+  };
+  const sourcePortByRelation = new Map();
+  const targetPortByRelation = new Map();
+  outgoing.forEach(relations => {
+    effectivePorts(relations, 'sourcePort').forEach((port, relationId) => {
+      sourcePortByRelation.set(relationId, port);
+    });
+  });
+  incoming.forEach(relations => {
+    effectivePorts(relations, 'targetPort').forEach((port, relationId) => {
+      targetPortByRelation.set(relationId, port);
+    });
+  });
+
   const routes = new Map();
   const bands = new Map();
   normalizedLinks.forEach(link => {
@@ -1031,8 +1229,8 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const incomingRelations = incoming.get(link.to);
     const outgoingIndex = outgoingRelations.findIndex(candidate => candidate.id === link.id);
     const incomingIndex = incomingRelations.findIndex(candidate => candidate.id === link.id);
-    const sourcePort = Number(link.sourcePort);
-    const targetPort = Number(link.targetPort);
+    const sourcePort = sourcePortByRelation.get(link.id);
+    const targetPort = targetPortByRelation.get(link.id);
     const startX = Number.isFinite(sourcePort) && sourcePort > 0 && sourcePort < 1
       ? from.x + from.width * sourcePort
       : outgoingRelations.length <= 1
@@ -1076,14 +1274,14 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const targetTop = Math.min(...bandRoutes.map(route => route.endY));
     const forward = targetLevel > sourceLevel && targetTop > sourceBottom;
     const availableGap = Math.max(48, targetTop - sourceBottom);
-    optimizeBandRouteLanes(bandRoutes, forward);
+    const lanesRepaired = optimizeBandRouteLanes(bandRoutes, forward);
     const stableRouting = bandRoutes.every(route =>
       Number.isFinite(Number(route.relation.routeOrder))
       && route.relation.laneSlot !== null
       && route.relation.laneSlot !== ''
       && Number.isFinite(Number(route.relation.laneSlot))
     );
-    if (stableRouting) {
+    if (stableRouting && !lanesRepaired) {
       // Stable relations use only their own geometry and earlier relations as
       // constraints. Appending a new relation can therefore never move an old
       // horizontal track; the new route yields around existing percentage pills.
