@@ -443,6 +443,33 @@ test('auto layout reorders adjacent layers to avoid avoidable branch crossings',
   assert.equal(edgeCrossingCount(layout, links), 0, 'a crossing-free ordering exists for these branches');
 });
 
+test('auto layout places larger direct shareholders further left for the same company', () => {
+  const nodes = [
+    { id: 'small-holder', name: '小股东' },
+    { id: 'large-holder', name: '大股东' },
+    { id: 'medium-holder', name: '中股东' },
+    { id: 'target-company', name: '目标公司', root: true }
+  ];
+  const links = [
+    { id: 'small-target', from: 'small-holder', to: 'target-company', percent: '0%' },
+    { id: 'large-target', from: 'large-holder', to: 'target-company', percent: '60%' },
+    { id: 'medium-target', from: 'medium-holder', to: 'target-company', percent: '30%' }
+  ];
+
+  const first = calculateEquityAutoLayout(nodes, links).positions;
+  const reordered = calculateEquityAutoLayout([...nodes].reverse(), [...links].reverse()).positions;
+
+  assert.ok(first.get('large-holder').x < first.get('medium-holder').x);
+  assert.ok(first.get('medium-holder').x < first.get('small-holder').x);
+  nodes.forEach(node => {
+    assert.deepEqual(
+      reordered.get(node.id),
+      first.get(node.id),
+      'percentage ordering must remain deterministic when input arrays change order'
+    );
+  });
+});
+
 test('auto layout escapes barycentric local minima in fan-out structures', () => {
   const nodes = ['a', 'b', 'c', 'd', 'w', 'x', 'y', 'z']
     .map(id => ({ id, name: id, width: 100, height: 60 }));

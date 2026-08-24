@@ -524,6 +524,114 @@ function normalizedOrderPositions(groups) {
   return positions;
 }
 
+function layoutOwnershipPercent(link) {
+  const value = Number(String(link?.percent ?? '').replace(/[%％,，\s]/g, ''));
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+function ownershipPriorityConstraints(links, levels) {
+  const byTarget = new Map();
+  links.forEach(link => {
+    const sourceLevel = levels.get(link.from);
+    const targetLevel = levels.get(link.to);
+    if (sourceLevel === undefined || targetLevel === undefined || sourceLevel >= targetLevel) return;
+    if (!byTarget.has(link.to)) byTarget.set(link.to, new Map());
+    const shareholders = byTarget.get(link.to);
+    const current = shareholders.get(link.from);
+    if (!current || layoutOwnershipPercent(link) > layoutOwnershipPercent(current)) {
+      shareholders.set(link.from, link);
+    }
+  });
+
+  const constraints = [];
+  [...byTarget.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .forEach(([targetId, shareholderMap]) => {
+      const shareholders = [...shareholderMap.values()].sort((left, right) =>
+        layoutOwnershipPercent(right) - layoutOwnershipPercent(left)
+        || left.from.localeCompare(right.from)
+      );
+      shareholders.forEach((higher, higherIndex) => {
+        shareholders.slice(higherIndex + 1).forEach(lower => {
+          const higherPercent = layoutOwnershipPercent(higher);
+          const lowerPercent = layoutOwnershipPercent(lower);
+          if (higherPercent <= lowerPercent || levels.get(higher.from) !== levels.get(lower.from)) return;
+          constraints.push({
+            level: levels.get(higher.from),
+            before: higher.from,
+            after: lower.from,
+            gap: higherPercent - lowerPercent,
+            targetId
+          });
+        });
+      });
+    });
+  return constraints.sort((left, right) =>
+    right.gap - left.gap
+    || left.targetId.localeCompare(right.targetId)
+    || left.before.localeCompare(right.before)
+    || left.after.localeCompare(right.after)
+  );
+}
+
+function ownershipOrderInversions(groups, links, levels) {
+  const indexes = new Map();
+  groups.forEach(nodeIds => nodeIds.forEach((nodeId, index) => indexes.set(nodeId, index)));
+  return ownershipPriorityConstraints(links, levels).reduce((total, constraint) =>
+    total + (indexes.get(constraint.before) > indexes.get(constraint.after) ? 1 : 0), 0
+  );
+}
+
+function applyOwnershipPriorityOrder(groups, links, levels) {
+  const constraintsByLevel = new Map();
+  ownershipPriorityConstraints(links, levels).forEach(constraint => {
+    if (!constraintsByLevel.has(constraint.level)) constraintsByLevel.set(constraint.level, []);
+    constraintsByLevel.get(constraint.level).push(constraint);
+  });
+
+  const result = new Map([...groups].map(([level, nodeIds]) => [level, [...nodeIds]]));
+  constraintsByLevel.forEach((constraints, level) => {
+    const layer = result.get(level);
+    if (!layer?.length) return;
+    const layerIds = new Set(layer);
+    const adjacency = new Map(layer.map(nodeId => [nodeId, new Set()]));
+    const hasPath = (start, target) => {
+      const pending = [start];
+      const visited = new Set();
+      while (pending.length) {
+        const nodeId = pending.pop();
+        if (nodeId === target) return true;
+        if (visited.has(nodeId)) continue;
+        visited.add(nodeId);
+        adjacency.get(nodeId)?.forEach(nextId => pending.push(nextId));
+      }
+      return false;
+    };
+    constraints.forEach(({ before, after }) => {
+      if (!layerIds.has(before) || !layerIds.has(after) || before === after) return;
+      if (adjacency.get(before).has(after) || hasPath(after, before)) return;
+      adjacency.get(before).add(after);
+    });
+
+    const priorIndex = new Map(layer.map((nodeId, index) => [nodeId, index]));
+    const indegree = new Map(layer.map(nodeId => [nodeId, 0]));
+    adjacency.forEach(targets => targets.forEach(target => indegree.set(target, indegree.get(target) + 1)));
+    const ready = layer.filter(nodeId => indegree.get(nodeId) === 0);
+    const ordered = [];
+    while (ready.length) {
+      ready.sort((left, right) => priorIndex.get(left) - priorIndex.get(right));
+      const nodeId = ready.shift();
+      ordered.push(nodeId);
+      adjacency.get(nodeId).forEach(target => {
+        indegree.set(target, indegree.get(target) - 1);
+        if (indegree.get(target) === 0) ready.push(target);
+      });
+    }
+    if (ordered.length === layer.length) result.set(level, ordered);
+  });
+  return result;
+}
+
 function layoutOrderScore(groups, links, levels) {
   const positions = normalizedOrderPositions(groups);
   const indexes = new Map();
@@ -566,7 +674,8 @@ function layoutOrderScore(groups, links, levels) {
     if (!positions.has(link.from) || !positions.has(link.to)) return total;
     return total + Math.abs(positions.get(link.from) - positions.get(link.to));
   }, 0);
-  return crossings * 1_000_000 + span;
+  const ownershipInversions = ownershipOrderInversions(groups, valid, levels);
+  return ownershipInversions * 1_000_000_000_000 + crossings * 1_000_000 + span;
 }
 
 /**
@@ -669,6 +778,8 @@ export function calculateEquityAutoLayout(nodes, links, options = {}) {
   // Barycentric sweeps can stop at a local minimum. Adjacent transposition is
   // cheap after the inversion-based scorer above and removes avoidable final crossings.
   groups.clear();
+  bestGroups = applyOwnershipPriorityOrder(bestGroups, validLinks, levels);
+  bestScore = layoutOrderScore(bestGroups, validLinks, levels);
   bestGroups.forEach((nodeIdsAtLevel, level) => groups.set(level, [...nodeIdsAtLevel]));
   for (let pass = 0; pass < 4; pass += 1) {
     let improved = false;
