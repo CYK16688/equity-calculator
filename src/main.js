@@ -25,6 +25,8 @@ const VIEW_HEIGHT = 1000;
 const SNAP_THRESHOLD = 10;
 const GRID_SIZE = 20;
 const DEFAULT_WATERMARK_TEXT = 'ownership studio';
+const MAX_NODE_WIDTH = 720;
+const MAX_NODE_HEIGHT = 360;
 
 const svg = document.getElementById('equity-graph');
 const canvasWrap = document.getElementById('canvas-wrap');
@@ -81,18 +83,29 @@ function normalizeData(candidate) {
     ...(data.settings && typeof data.settings === 'object' ? data.settings : {}),
     watermarkText: normalizeWatermarkText(data.settings?.watermarkText ?? data.watermarkText)
   };
-  data.nodes = data.nodes.map((node, index) => ({
-    id: String(node.id || `node-${index + 1}`),
-    name: String(node.name || node.text || `未命名主体 ${index + 1}`),
-    type: String(node.type || '其他主体'),
-    code: String(node.code || ''),
-    note: String(node.note || ''),
-    ownershipScope: node.ownershipScope === 'complete' ? 'complete' : 'partial',
-    root: Boolean(node.root),
-    ribbon: node.ribbon || null,
-    x: Number.isFinite(Number(node.x)) ? Number(node.x) : 120 + (index % 5) * 270,
-    y: Number.isFinite(Number(node.y)) ? Number(node.y) : 100 + Math.floor(index / 5) * 200
-  }));
+  data.nodes = data.nodes.map((node, index) => {
+    const root = Boolean(node.root);
+    const defaultWidth = root ? 330 : 220;
+    const defaultHeight = root ? 76 : 88;
+    const minWidth = root ? 220 : 140;
+    const minHeight = 60;
+    const width = Number(node.width);
+    const height = Number(node.height);
+    return {
+      id: String(node.id || `node-${index + 1}`),
+      name: String(node.name || node.text || `未命名主体 ${index + 1}`),
+      type: String(node.type || '其他主体'),
+      code: String(node.code || ''),
+      note: String(node.note || ''),
+      ownershipScope: node.ownershipScope === 'complete' ? 'complete' : 'partial',
+      root,
+      ribbon: node.ribbon || null,
+      x: Number.isFinite(Number(node.x)) ? Number(node.x) : 120 + (index % 5) * 270,
+      y: Number.isFinite(Number(node.y)) ? Number(node.y) : 100 + Math.floor(index / 5) * 200,
+      width: Number.isFinite(width) ? Math.min(MAX_NODE_WIDTH, Math.max(minWidth, width)) : defaultWidth,
+      height: Number.isFinite(height) ? Math.min(MAX_NODE_HEIGHT, Math.max(minHeight, height)) : defaultHeight
+    };
+  });
   const nodeIds = data.nodes.map(node => node.id);
   if (new Set(nodeIds).size !== nodeIds.length) throw new Error('nodes 中存在重复主体 ID，请先合并或修正');
   const validIds = new Set(data.nodes.map(node => node.id));
@@ -178,6 +191,7 @@ const view = {
   snapGuides: null,
   panning: null,
   nodeDrag: null,
+  nodeResize: null,
   linkDraft: null,
   justDragged: false
 };
@@ -483,7 +497,13 @@ function createSvgElement(name, attributes = {}, text = '') {
 }
 
 function nodeDimensions(node) {
-  return node.root ? { width: 330, height: 76 } : { width: 220, height: 88 };
+  const minWidth = node.root ? 220 : 140;
+  const defaultWidth = node.root ? 330 : 220;
+  const defaultHeight = node.root ? 76 : 88;
+  return {
+    width: Math.min(MAX_NODE_WIDTH, Math.max(minWidth, Number(node.width) || defaultWidth)),
+    height: Math.min(MAX_NODE_HEIGHT, Math.max(60, Number(node.height) || defaultHeight))
+  };
 }
 
 function addDefinitions() {
@@ -963,6 +983,36 @@ function drawNode(stage, node) {
     event.stopPropagation();
   });
   group.appendChild(connectionHandle);
+
+  const resizeHandle = createSvgElement('rect', {
+    class: 'resize-handle', x: width - 14, y: height - 14, width: 12, height: 12,
+    rx: 2, fill: '#fff', stroke: '#156ef1', 'stroke-width': '2'
+  });
+  resizeHandle.appendChild(createSvgElement('title', {}, '拖动调整主体大小'));
+  resizeHandle.addEventListener('pointerdown', event => {
+    if (sidebarMode === 'query' || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelInlineNodeEdit();
+    cancelInlineRelationEdit();
+    selectNode(node.id, false);
+    const point = clientToWorld(event.clientX, event.clientY);
+    view.nodeResize = {
+      id: node.id,
+      startX: point.x,
+      startY: point.y,
+      nodeWidth: width,
+      nodeHeight: height,
+      before: deepCopy(graphData),
+      moved: false
+    };
+    svg.setPointerCapture(event.pointerId);
+  });
+  resizeHandle.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  group.appendChild(resizeHandle);
 
   group.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
@@ -2256,7 +2306,7 @@ function setSidebarMode(mode) {
   document.getElementById('sidebar-mode-title').textContent = queryMode ? '权益查询' : '主体清单';
   document.getElementById('canvas-hint').textContent = queryMode
     ? '权益查询：依次点击两个主体 · 再点第三个主体开始新查询'
-    : '拖动节点底部圆点建立关系 · 双击节点改名 · 点击比例修改';
+    : '拖动右下角调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改';
   document.getElementById('sidebar-subjects').setAttribute('aria-selected', String(!queryMode));
   document.getElementById('sidebar-ownership-query').setAttribute('aria-selected', String(queryMode));
   if (queryMode && !ownershipQuerySourceId && !ownershipQueryTargetId) ownershipQueryPickRole = 'source';
@@ -2511,6 +2561,23 @@ svg.addEventListener('pointermove', event => {
     renderGraph();
     return;
   }
+  if (view.nodeResize) {
+    const point = clientToWorld(event.clientX, event.clientY);
+    const node = nodeMap().get(view.nodeResize.id);
+    if (!node) return;
+    const minWidth = node.root ? 220 : 140;
+    const dx = point.x - view.nodeResize.startX;
+    const dy = point.y - view.nodeResize.startY;
+    const nextWidth = Math.min(MAX_NODE_WIDTH, Math.max(minWidth, view.nodeResize.nodeWidth + dx));
+    const nextHeight = Math.min(MAX_NODE_HEIGHT, Math.max(60, view.nodeResize.nodeHeight + dy));
+    if (Math.abs(nextWidth - view.nodeResize.nodeWidth) + Math.abs(nextHeight - view.nodeResize.nodeHeight) > 2) {
+      view.nodeResize.moved = true;
+    }
+    node.width = Math.round(nextWidth);
+    node.height = Math.round(nextHeight);
+    renderGraph();
+    return;
+  }
   if (!view.panning) return;
   const point = clientToSvg(event.clientX, event.clientY);
   view.x = view.panning.x + point.x - view.panning.pointerX;
@@ -2565,14 +2632,34 @@ svg.addEventListener('pointerup', event => {
       renderGraph();
     }
   }
+  if (view.nodeResize) {
+    const resize = view.nodeResize;
+    view.nodeResize = null;
+    if (resize.moved) {
+      historyStack.push(createHistoryEntry(false, resize.before));
+      redoStack = [];
+      saveData();
+      updateHistoryButtons();
+      renderAll();
+      showToast('主体大小已保存');
+    } else {
+      renderGraph();
+    }
+  }
   view.panning = null;
   canvasWrap.classList.remove('dragging');
 });
 
 svg.addEventListener('pointercancel', () => {
-  if (!view.linkDraft) return;
-  view.linkDraft = null;
-  renderGraph();
+  if (view.linkDraft) {
+    view.linkDraft = null;
+    renderGraph();
+    return;
+  }
+  if (view.nodeResize) {
+    view.nodeResize = null;
+    renderGraph();
+  }
 });
 
 svg.addEventListener('wheel', event => {
