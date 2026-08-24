@@ -501,6 +501,60 @@ function routeSegments(points) {
   });
 }
 
+function relationLabelWidth(route) {
+  return Math.max(48, String(route.relation.percent || '').length * 9 + 18);
+}
+
+function relationLabelBox(x, y, width) {
+  return {
+    left: x - width / 2,
+    right: x + width / 2,
+    top: y - 15,
+    bottom: y + 13
+  };
+}
+
+function relationLabelBoxesOverlap(left, right, gap = 7) {
+  return !(
+    left.right + gap <= right.left
+    || left.left >= right.right + gap
+    || left.bottom + gap <= right.top
+    || left.top >= right.bottom + gap
+  );
+}
+
+function assignRelationLabelAnchors(routes) {
+  const routesByTarget = new Map();
+  routes.forEach(route => {
+    if (!routesByTarget.has(route.relation.to)) routesByTarget.set(route.relation.to, []);
+    routesByTarget.get(route.relation.to).push(route);
+  });
+
+  routesByTarget.forEach(targetRoutes => {
+    const occupied = [];
+    [...targetRoutes]
+      .sort((left, right) => left.endX - right.endX || left.relation.id.localeCompare(right.relation.id))
+      .forEach(route => {
+        const width = relationLabelWidth(route);
+        const anchorX = route.endX;
+        const baseY = route.endY - 25;
+        let tier = 0;
+
+        while (true) {
+          // 百分比始终属于自己的入箭头端口；拥挤时只沿该竖线向上分层。
+          const anchorY = baseY - tier * 36;
+          const box = relationLabelBox(anchorX, anchorY, width);
+          if (occupied.every(existing => !relationLabelBoxesOverlap(box, existing))) {
+            route.labelAnchor = { x: anchorX, y: anchorY, tier };
+            occupied.push(box);
+            return;
+          }
+          tier += 1;
+        }
+      });
+  });
+}
+
 function routeHorizontalInterval(route) {
   return {
     left: Math.min(route.startX, route.endX),
@@ -790,8 +844,9 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
         ];
     route.segments = routeSegments(points);
     route.pathData = pathFromSegments(route.segments);
-    route.labelAnchor = { x: route.endX, y: route.endY - 25 };
   });
+
+  assignRelationLabelAnchors(routes);
 
   return { routes, levels };
 }

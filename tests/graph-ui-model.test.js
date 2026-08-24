@@ -549,6 +549,85 @@ test('relation routing assigns target ports monotonically by source x position',
   });
 });
 
+test('relation labels stay on their own target stems while dense labels stack vertically', () => {
+  const target = { id: 'fund', x: 300, y: 360, width: 180, height: 100 };
+  const nodes = [
+    { id: 'source-left', x: 0, y: 0, width: 180, height: 90 },
+    { id: 'source-middle', x: 300, y: 0, width: 180, height: 90 },
+    { id: 'source-right', x: 600, y: 0, width: 180, height: 90 },
+    target
+  ];
+  const links = [
+    { id: 'left-fund', from: 'source-left', to: 'fund', percent: '100.0000%' },
+    { id: 'middle-fund', from: 'source-middle', to: 'fund', percent: '100.0000%' },
+    { id: 'right-fund', from: 'source-right', to: 'fund', percent: '100.0000%' }
+  ];
+
+  const result = calculateEquityRelationRoutes(nodes, links);
+  const routes = links.map(link => relationRoute(result, link.id));
+  const labelBoxes = routes.map(route => {
+    const width = Math.max(48, route.relation.percent.length * 9 + 18);
+    assert.equal(
+      route.labelAnchor.x,
+      route.endX,
+      `${route.relation.id} label must remain centered on its own final target stem`
+    );
+    return {
+      left: route.labelAnchor.x - width / 2,
+      right: route.labelAnchor.x + width / 2,
+      top: route.labelAnchor.y - 15,
+      bottom: route.labelAnchor.y + 13
+    };
+  });
+
+  for (let leftIndex = 0; leftIndex < labelBoxes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < labelBoxes.length; rightIndex += 1) {
+      const left = labelBoxes[leftIndex];
+      const right = labelBoxes[rightIndex];
+      const overlap = !(
+        left.right + 7 <= right.left
+        || left.left >= right.right + 7
+        || left.bottom + 7 <= right.top
+        || left.top >= right.bottom + 7
+      );
+      assert.equal(overlap, false, 'dense labels should use vertical tiers instead of horizontal drift');
+    }
+  }
+  assert.ok(
+    new Set(routes.map(route => route.labelAnchor.y)).size > 1,
+    'overlapping labels should be separated into vertical tiers'
+  );
+  assert.deepEqual(
+    routes.map(route => route.labelAnchor.tier),
+    [0, 1, 2],
+    'three mutually overlapping labels should use the three nearest available tiers'
+  );
+});
+
+test('relation label anchors are stable when relation input order changes', () => {
+  const nodes = [
+    { id: 'source-left', x: 0, y: 0, width: 180, height: 90 },
+    { id: 'source-middle', x: 300, y: 0, width: 180, height: 90 },
+    { id: 'source-right', x: 600, y: 0, width: 180, height: 90 },
+    { id: 'fund', x: 300, y: 360, width: 180, height: 100 }
+  ];
+  const links = [
+    { id: 'left-fund', from: 'source-left', to: 'fund', percent: '0%' },
+    { id: 'middle-fund', from: 'source-middle', to: 'fund', percent: '100.0000%' },
+    { id: 'right-fund', from: 'source-right', to: 'fund', percent: '21.5%' }
+  ];
+  const original = calculateEquityRelationRoutes(nodes, links);
+  const shuffled = calculateEquityRelationRoutes(nodes, [links[2], links[0], links[1]]);
+
+  links.forEach(link => {
+    assert.deepEqual(
+      relationRoute(shuffled, link.id).labelAnchor,
+      relationRoute(original, link.id).labelAnchor,
+      `${link.id} label position should not depend on relation insertion order`
+    );
+  });
+});
+
 test('relation routing nests long common-target routes without crossing inner source stems', () => {
   const nodes = [
     { id: 'gp', x: 0, y: 0, width: 220, height: 100 },

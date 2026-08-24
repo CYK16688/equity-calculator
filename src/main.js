@@ -678,64 +678,6 @@ function drawRibbon(group, node, width) {
   group.appendChild(ribbon);
 }
 
-function boxesOverlap(a, b, gap = 7) {
-  return !(
-    a.right + gap <= b.left ||
-    a.left >= b.right + gap ||
-    a.bottom + gap <= b.top ||
-    a.top >= b.bottom + gap
-  );
-}
-
-function placeRelationLabel(endX, endY, labelWidth, occupiedLabels) {
-  // 比例始终锚定在被投企业的箭头入口上方，不因新增其他股东而改变归属位置。
-  const anchorX = endX;
-  const anchorY = endY - 25;
-  const horizontalStep = labelWidth + 18;
-  const candidates = [
-    [0, 0],
-    [0, -34],
-    [0, -68],
-    [-horizontalStep, 0],
-    [horizontalStep, 0],
-    [-horizontalStep, -34],
-    [horizontalStep, -34]
-  ];
-
-  for (const [offsetX, offsetY] of candidates) {
-    const x = anchorX + offsetX;
-    const y = anchorY + offsetY;
-    const box = {
-      left: x - labelWidth / 2,
-      right: x + labelWidth / 2,
-      top: y - 15,
-      bottom: y + 13
-    };
-    if (occupiedLabels.every(existing => !boxesOverlap(box, existing))) {
-      occupiedLabels.push(box);
-      return { x, y };
-    }
-  }
-
-  // 极端密集图继续向上阶梯排列。已占用框数量有限，因此总能找到不重叠的位置。
-  let step = 3;
-  while (true) {
-    const x = anchorX;
-    const y = anchorY - step * 34;
-    const box = {
-      left: x - labelWidth / 2,
-      right: x + labelWidth / 2,
-      top: y - 15,
-      bottom: y + 13
-    };
-    if (occupiedLabels.every(existing => !boxesOverlap(box, existing))) {
-      occupiedLabels.push(box);
-      return { x, y };
-    }
-    step += 1;
-  }
-}
-
 function buildRelationRoutes() {
   const layoutNodes = graphData.nodes.map(node => {
     const size = nodeDimensions(node);
@@ -744,7 +686,7 @@ function buildRelationRoutes() {
   return calculateEquityRelationRoutes(layoutNodes, graphData.links).routes;
 }
 
-function drawRelation(pathStage, labelStage, relation, route, occupiedLabels) {
+function drawRelation(pathStage, labelStage, relation, route) {
   if (!route) return;
   const { from, to, endX, endY } = route;
   const active = selected?.kind === 'link' && selected.id === relation.id;
@@ -788,7 +730,8 @@ function drawRelation(pathStage, labelStage, relation, route, occupiedLabels) {
   pathStage.appendChild(group);
 
   const labelWidth = Math.max(48, relation.percent.length * 9 + 18);
-  const { x: labelX, y: labelY } = placeRelationLabel(endX, endY, labelWidth, occupiedLabels);
+  const labelX = route.labelAnchor?.x ?? endX;
+  const labelY = route.labelAnchor?.y ?? endY - 25;
   const labelGroup = createSvgElement('g', {
     class: `relation-label-group${stateClasses}`,
     'data-relation-id': relation.id,
@@ -1038,12 +981,11 @@ function renderGraph() {
   drawSnapGuides(stage);
   const nodes = nodeMap();
   const relationRoutes = buildRelationRoutes();
-  const occupiedLabels = [];
   const relationPathStage = createSvgElement('g', { class: 'relation-path-layer' });
   const nodeStage = createSvgElement('g', { class: 'node-layer' });
   const relationLabelStage = createSvgElement('g', { class: 'relation-label-layer' });
   graphData.links.forEach(relation => drawRelation(
-    relationPathStage, relationLabelStage, relation, relationRoutes.get(relation.id), occupiedLabels
+    relationPathStage, relationLabelStage, relation, relationRoutes.get(relation.id)
   ));
   drawRelationDraft(relationPathStage, nodes);
   graphData.nodes.forEach(node => drawNode(nodeStage, node));
