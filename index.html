@@ -95,6 +95,8 @@
             <button id="toggle-snap" class="active" aria-pressed="true" title="拖动节点时显示参考线并自动吸附">磁吸：开</button>
             <button id="toggle-watermark">隐藏水印</button>
             <button id="edit-watermark" aria-expanded="false">水印内容</button>
+            <button id="copy-selection" title="复制当前选中的主体或持股关系">复制</button>
+            <button id="paste-selection" title="粘贴已复制的主体或持股关系">粘贴</button>
           </div>
           <form class="watermark-editor" id="watermark-editor" hidden>
             <label for="watermark-text">自定义水印内容</label>
@@ -124,7 +126,7 @@
               <p>从企业、股东或投资平台开始搭建股权关系。</p>
               <button class="primary-button" id="empty-add">新增主体</button>
             </div>
-            <div class="canvas-hint" id="canvas-hint">拖动右下角调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改</div>
+            <div class="canvas-hint" id="canvas-hint">拖动主体右下边缘调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改</div>
           </div>
         </section>
 

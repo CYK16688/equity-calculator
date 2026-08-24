@@ -164,9 +164,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .connection-handle { opacity: 0; cursor: crosshair; transition: opacity .14s ease, r .14s ease; pointer-events: all; }
 .graph-node:hover .connection-handle, .graph-node.selected .connection-handle { opacity: 1; }
 .connection-handle:hover { r: 10; }
-.resize-handle { opacity: 0; cursor: nwse-resize; pointer-events: all; transition: opacity .14s ease, fill .14s ease; }
-.graph-node:hover .resize-handle, .graph-node.selected .resize-handle { opacity: 1; }
-.resize-handle:hover { fill: #eaf3ff; }
+/* Resize uses an invisible hit area at the lower-right edge instead of a visible corner button. */
+.resize-handle { opacity: 0; cursor: nwse-resize; pointer-events: all; }
 .graph-node.connection-target > rect:first-child { stroke: #16a36a; stroke-width: 4; filter: url(#node-shadow); }
 .relation-draft { fill: none; stroke: #156ef1; stroke-width: 2.5; stroke-dasharray: 7 5; marker-end: url(#arrow-active); vector-effect: non-scaling-stroke; pointer-events: none; }
 .relation-draft-start { fill: #156ef1; stroke: #fff; stroke-width: 2; pointer-events: none; }

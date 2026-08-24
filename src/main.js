@@ -181,6 +181,7 @@ let ownershipQueryPickRole = 'source';
 let currentOwnershipQuery = null;
 let ownershipQueryFocusedPath = null;
 let watermarkDraftText = null;
+let clipboardBuffer = null;
 
 const view = {
   scale: 0.82,
@@ -425,6 +426,10 @@ function showToast(message, tone = 'success') {
 function updateHistoryButtons() {
   document.getElementById('undo').disabled = historyStack.length === 0;
   document.getElementById('redo').disabled = redoStack.length === 0;
+  const copyButton = document.getElementById('copy-selection');
+  const pasteButton = document.getElementById('paste-selection');
+  if (copyButton) copyButton.disabled = !selected;
+  if (pasteButton) pasteButton.disabled = !clipboardBuffer || !canEditGraph();
 }
 
 function captureView() {
@@ -986,9 +991,9 @@ function drawNode(stage, node) {
 
   const resizeHandle = createSvgElement('rect', {
     class: 'resize-handle', x: width - 14, y: height - 14, width: 12, height: 12,
-    rx: 2, fill: '#fff', stroke: '#156ef1', 'stroke-width': '2'
+    rx: 2, fill: 'transparent', stroke: 'none'
   });
-  resizeHandle.appendChild(createSvgElement('title', {}, '拖动调整主体大小'));
+  resizeHandle.appendChild(createSvgElement('title', {}, '拖动主体右下边缘调整大小'));
   resizeHandle.addEventListener('pointerdown', event => {
     if (sidebarMode === 'query' || event.button !== 0) return;
     event.preventDefault();
@@ -1892,6 +1897,7 @@ function renderAll() {
   renderGraph();
   renderNodeList();
   renderInspector();
+  updateHistoryButtons();
 }
 
 function handleOwnershipQueryNodePick(id) {
@@ -1944,6 +1950,74 @@ function selectRelation(id) {
 
 function generateId(prefix) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function copySelection() {
+  if (!selected) {
+    showToast('请先选择一个主体或持股关系', 'warning');
+    return;
+  }
+  if (selected.kind === 'node') {
+    const node = nodeMap().get(selected.id);
+    if (!node) return;
+    clipboardBuffer = { kind: 'node', data: deepCopy(node) };
+    showToast('主体已复制，可点击粘贴或按 Ctrl/Cmd+V');
+  } else {
+    const relation = relationMap().get(selected.id);
+    if (!relation) return;
+    clipboardBuffer = { kind: 'link', data: deepCopy(relation) };
+    showToast('持股关系已复制，可点击粘贴或按 Ctrl/Cmd+V');
+  }
+  updateHistoryButtons();
+}
+
+function pasteSelection() {
+  if (!canEditGraph()) return;
+  if (!clipboardBuffer) {
+    showToast('剪贴板为空，请先复制主体或持股关系', 'warning');
+    return;
+  }
+  if (clipboardBuffer.kind === 'node') {
+    const source = clipboardBuffer.data;
+    const id = generateId('node');
+    const sourceName = String(source.name || '新主体').replace(/\n/g, ' ').trim();
+    const name = suggestUniqueNodeName(graphData.nodes, sourceName);
+    const newNode = {
+      ...deepCopy(source),
+      id,
+      name,
+      code: '',
+      root: false,
+      x: Math.max(20, Number(source.x || 100) + 40),
+      y: Math.max(20, Number(source.y || 100) + 40)
+    };
+    commit('主体已粘贴', () => {
+      graphData.nodes.push(newNode);
+      selected = { kind: 'node', id };
+    });
+    document.getElementById('edit-name').focus();
+    document.getElementById('edit-name').select();
+    return;
+  }
+
+  const source = clipboardBuffer.data;
+  if (!nodeMap().has(source.from) || !nodeMap().has(source.to)) {
+    showToast('关系所连接的主体不存在，无法粘贴', 'warning');
+    return;
+  }
+  if (source.from === source.to) {
+    showToast('不能粘贴连接自身的持股关系', 'warning');
+    return;
+  }
+  if (graphData.links.some(link => link.from === source.from && link.to === source.to)) {
+    showToast('相同的持股关系已经存在，无法重复粘贴', 'warning');
+    return;
+  }
+  const id = generateId('relation');
+  commit('持股关系已粘贴', () => {
+    graphData.links.push({ id, from: source.from, to: source.to, percent: source.percent });
+    selected = { kind: 'link', id };
+  });
 }
 
 function addStandaloneNode() {
@@ -2306,7 +2380,7 @@ function setSidebarMode(mode) {
   document.getElementById('sidebar-mode-title').textContent = queryMode ? '权益查询' : '主体清单';
   document.getElementById('canvas-hint').textContent = queryMode
     ? '权益查询：依次点击两个主体 · 再点第三个主体开始新查询'
-    : '拖动右下角调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改';
+    : '拖动主体右下边缘调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改';
   document.getElementById('sidebar-subjects').setAttribute('aria-selected', String(!queryMode));
   document.getElementById('sidebar-ownership-query').setAttribute('aria-selected', String(queryMode));
   if (queryMode && !ownershipQuerySourceId && !ownershipQueryTargetId) ownershipQueryPickRole = 'source';
@@ -2431,6 +2505,8 @@ document.getElementById('add-independent').addEventListener('click', addStandalo
 document.getElementById('empty-add').addEventListener('click', addStandaloneNode);
 document.getElementById('undo').addEventListener('click', undo);
 document.getElementById('redo').addEventListener('click', redo);
+document.getElementById('copy-selection').addEventListener('click', copySelection);
+document.getElementById('paste-selection').addEventListener('click', pasteSelection);
 document.getElementById('auto-layout').addEventListener('click', autoLayout);
 document.getElementById('toggle-snap').addEventListener('click', event => {
   view.snapEnabled = !view.snapEnabled;
@@ -2678,6 +2754,16 @@ document.addEventListener('keydown', event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
     event.preventDefault();
     redo();
+    return;
+  }
+  if (!editing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c') {
+    event.preventDefault();
+    copySelection();
+    return;
+  }
+  if (!editing && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'v') {
+    event.preventDefault();
+    pasteSelection();
     return;
   }
   if (sidebarMode === 'query' && ['F2', 'Delete', 'Backspace'].includes(event.key)) return;
