@@ -453,27 +453,75 @@ export function calculateEquityAutoLayout(nodes, links, options = {}) {
   let shiftX = centerX - (left + right) / 2;
   if (left + shiftX < minX) shiftX += minX - (left + shiftX);
 
-  const levelY = new Map();
-  let y = topY;
-  levelNumbers.forEach((level, index) => {
-    levelY.set(level, y);
-    const maxHeight = Math.max(...groups.get(level).map(nodeId => sizes.get(nodeId).height));
-    if (index < levelNumbers.length - 1) y += maxHeight + layerGap;
-  });
-
-  const positions = new Map();
-  levelNumbers.forEach(level => {
-    groups.get(level).forEach((nodeId, order) => {
-      positions.set(nodeId, {
-        x: Math.round(centers.get(nodeId) + shiftX - sizes.get(nodeId).width / 2),
-        y: Math.round(levelY.get(level)),
-        level,
-        order,
-        width: sizes.get(nodeId).width,
-        height: sizes.get(nodeId).height
+  const transitionGaps = new Map(levelNumbers.slice(1).map(level => [level, layerGap]));
+  const buildLevelY = () => {
+    const result = new Map();
+    let y = topY;
+    levelNumbers.forEach((level, index) => {
+      result.set(level, y);
+      const maxHeight = Math.max(...groups.get(level).map(nodeId => sizes.get(nodeId).height));
+      if (index < levelNumbers.length - 1) {
+        y += maxHeight + transitionGaps.get(levelNumbers[index + 1]);
+      }
+    });
+    return result;
+  };
+  const buildPositions = levelY => {
+    const result = new Map();
+    levelNumbers.forEach(level => {
+      groups.get(level).forEach((nodeId, order) => {
+        result.set(nodeId, {
+          x: Math.round(centers.get(nodeId) + shiftX - sizes.get(nodeId).width / 2),
+          y: Math.round(levelY.get(level)),
+          level,
+          order,
+          width: sizes.get(nodeId).width,
+          height: sizes.get(nodeId).height
+        });
       });
     });
-  });
+    return result;
+  };
+
+  let levelY = buildLevelY();
+  let positions = buildPositions(levelY);
+
+  // A dense target needs room for both its percentage-label tiers and the
+  // horizontal route lanes above them. Probe the finished x-order, then grow
+  // only the affected inter-layer gaps before returning final positions.
+  if (validLinks.length && levelNumbers.length > 1) {
+    const probeNodes = orderedNodes.map(node => {
+      const position = positions.get(String(node.id));
+      return {
+        ...node,
+        x: position.x,
+        y: position.y,
+        layoutWidth: position.width,
+        layoutHeight: position.height
+      };
+    });
+    const probeRoutes = calculateEquityRelationRoutes(probeNodes, hierarchyLinks).routes;
+    const reserveByTargetLevel = new Map();
+    probeRoutes.forEach(route => {
+      if (route.targetLevel <= route.sourceLevel) return;
+      const labelDepth = route.endY - route.labelBandTop;
+      const current = reserveByTargetLevel.get(route.targetLevel) || { labelDepth: 0, maxLane: 0 };
+      current.labelDepth = Math.max(current.labelDepth, labelDepth);
+      current.maxLane = Math.max(current.maxLane, route.laneIndex || 0);
+      reserveByTargetLevel.set(route.targetLevel, current);
+    });
+    let expanded = false;
+    reserveByTargetLevel.forEach((reserve, targetLevel) => {
+      const requiredGap = reserve.labelDepth + 42 + reserve.maxLane * 12;
+      if (requiredGap <= (transitionGaps.get(targetLevel) || layerGap)) return;
+      transitionGaps.set(targetLevel, requiredGap);
+      expanded = true;
+    });
+    if (expanded) {
+      levelY = buildLevelY();
+      positions = buildPositions(levelY);
+    }
+  }
   return { positions, levels, unresolved, score: bestScore };
 }
 
@@ -552,6 +600,10 @@ function assignRelationLabelAnchors(routes) {
           tier += 1;
         }
       });
+    const labelBandTop = Math.min(...occupied.map(box => box.top));
+    targetRoutes.forEach(route => {
+      route.labelBandTop = labelBandTop;
+    });
   });
 }
 
@@ -762,6 +814,10 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     bands.get(bandKey).push(route);
   });
 
+  // Labels and paths share the same vertical channel above each target. Assign
+  // label tiers first so route lanes can stay outside that reserved band.
+  assignRelationLabelAnchors(routes);
+
   bands.forEach(bandRoutes => {
     const sourceLevel = bandRoutes[0].sourceLevel;
     const targetLevel = bandRoutes[0].targetLevel;
@@ -771,12 +827,20 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const availableGap = Math.max(48, targetTop - sourceBottom);
     optimizeBandRouteLanes(bandRoutes, forward);
     const maxLane = Math.max(0, ...bandRoutes.map(route => route.laneIndex));
+    const labelBandTop = Math.min(...bandRoutes.map(route => route.labelBandTop));
+    const laneCeiling = labelBandTop - 10;
+    const preferredLaneStart = sourceBottom + 32;
+    const laneStart = forward && preferredLaneStart + maxLane * 12 > laneCeiling
+      ? laneCeiling - maxLane * 12
+      : preferredLaneStart;
     const spacing = maxLane > 0
-      ? Math.max(12, Math.min(laneGap, (availableGap - 64) / maxLane))
+      ? (forward
+          ? Math.min(laneGap, Math.max(12, (laneCeiling - laneStart) / maxLane))
+          : Math.max(12, Math.min(laneGap, (availableGap - 64) / maxLane)))
       : 0;
     bandRoutes.forEach(route => {
       route.midY = forward
-        ? sourceBottom + 32 + route.laneIndex * spacing
+        ? laneStart + route.laneIndex * spacing
         : Math.max(route.startY, route.endY) + 32 + route.laneIndex * laneGap;
     });
   });
@@ -826,7 +890,12 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const safeTargetLaneY = isLong
       ? lastObstacleBottom + Math.max(2, Math.min(obstacleGap, remainingTargetGap / 2))
       : defaultTargetLaneY;
-    const targetLaneY = Math.min(route.endY - 2, Math.max(defaultTargetLaneY, safeTargetLaneY));
+    const unclampedTargetLaneY = Math.min(route.endY - 2, Math.max(defaultTargetLaneY, safeTargetLaneY));
+    const labelLaneCeiling = route.labelBandTop - 10;
+    const canReserveLabelBand = !isLong || labelLaneCeiling >= lastObstacleBottom + 2;
+    const targetLaneY = canReserveLabelBand
+      ? Math.min(unclampedTargetLaneY, labelLaneCeiling)
+      : unclampedTargetLaneY;
     const points = isLong
       ? [
           { x: route.startX, y: route.startY },
@@ -845,8 +914,6 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     route.segments = routeSegments(points);
     route.pathData = pathFromSegments(route.segments);
   });
-
-  assignRelationLabelAnchors(routes);
 
   return { routes, levels };
 }

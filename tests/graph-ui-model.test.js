@@ -101,6 +101,16 @@ function segmentIntersectsRectangleInterior(segment, rectangle) {
     && Math.min(segmentRight, right) - Math.max(segmentLeft, left) > 0;
 }
 
+function relationLabelRectangle(route) {
+  const width = Math.max(48, String(route.relation.percent || '').length * 9 + 18);
+  return {
+    x: route.labelAnchor.x - width / 2,
+    y: route.labelAnchor.y - 15,
+    width,
+    height: 28
+  };
+}
+
 function layoutPosition(layout, nodeId) {
   assert.ok(layout?.positions instanceof Map, 'layout.positions should be a Map keyed by node id');
   const position = layout.positions.get(nodeId);
@@ -624,6 +634,78 @@ test('relation label anchors are stable when relation input order changes', () =
       relationRoute(shuffled, link.id).labelAnchor,
       relationRoute(original, link.id).labelAnchor,
       `${link.id} label position should not depend on relation insertion order`
+    );
+  });
+});
+
+test('relation routing reserves a clear label band above a dense common target', () => {
+  const target = { id: 'fund', x: 300, y: 300, width: 220, height: 100 };
+  const nodes = [target];
+  const links = [];
+  for (let index = 0; index < 7; index += 1) {
+    nodes.push({ id: `shareholder-${index}`, x: index * 140, y: 0, width: 100, height: 150 });
+    links.push({
+      id: `shareholder-fund-${index}`,
+      from: `shareholder-${index}`,
+      to: 'fund',
+      percent: index === 0 ? '100%' : '0%'
+    });
+  }
+
+  const result = calculateEquityRelationRoutes(nodes, links);
+  const routes = links.map(link => relationRoute(result, link.id));
+
+  routes.forEach(labelRoute => {
+    const labelRectangle = relationLabelRectangle(labelRoute);
+    routes.forEach(pathRoute => {
+      pathRoute.segments
+        .filter(segment => segment.orientation === 'horizontal')
+        .forEach((segment, index) => {
+          assert.equal(
+            segmentIntersectsRectangleInterior(segment, labelRectangle),
+            false,
+            `${pathRoute.relation.id} horizontal segment ${index} must not cross ${labelRoute.relation.id} label`
+          );
+        });
+    });
+  });
+});
+
+test('auto layout increases the layer gap for a dense target label band', () => {
+  const nodes = [];
+  const links = [];
+  for (let index = 0; index < 7; index += 1) {
+    nodes.push({ id: `shareholder-${index}`, name: `股东 ${index + 1}`, width: 100, height: 88 });
+    links.push({
+      id: `shareholder-fund-${index}`,
+      from: `shareholder-${index}`,
+      to: 'fund',
+      percent: index === 0 ? '100%' : '0%'
+    });
+  }
+  nodes.push({ id: 'fund', name: 'GP+LP 有限合伙公司', width: 220, height: 100 });
+
+  const layout = calculateEquityAutoLayout(nodes, links);
+  const routedNodes = nodes.map(node => {
+    const position = layoutPosition(layout, node.id);
+    return {
+      ...node,
+      x: position.x,
+      y: position.y,
+      layoutWidth: position.width,
+      layoutHeight: position.height
+    };
+  });
+  const routes = [...calculateEquityRelationRoutes(routedNodes, links).routes.values()];
+
+  routes.forEach(route => {
+    assert.ok(
+      route.midY >= route.startY + 32,
+      `${route.relation.id} should preserve a clear downward outlet after automatic layout`
+    );
+    assert.ok(
+      route.midY < route.labelBandTop,
+      `${route.relation.id} horizontal track should remain above the target label band`
     );
   });
 });
