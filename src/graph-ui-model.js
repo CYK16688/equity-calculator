@@ -37,6 +37,10 @@ export function zoomOutScale(scale) {
   return Number(scale) / ZOOM_STEP;
 }
 
+export function graphLayerOrder(relationPathLayer, nodeLayer, relationLabelLayer) {
+  return [relationPathLayer, nodeLayer, relationLabelLayer];
+}
+
 export function buildOwnershipTree(nodes, links, matchedIds = null) {
   const orderedNodes = Array.isArray(nodes) ? nodes : [];
   const nodeById = new Map(orderedNodes.map(node => [String(node.id), node]));

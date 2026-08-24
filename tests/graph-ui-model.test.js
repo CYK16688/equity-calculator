@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildOwnershipTree,
+  graphLayerOrder,
   nodeDisplayLabel,
   suggestUniqueNodeName,
   zoomInScale,
@@ -21,6 +22,13 @@ test('quick-add names remain unique and duplicate labels expose an identity', ()
 test('zoom in and out are reciprocal', () => {
   const initial = 0.82;
   assert.ok(Math.abs(zoomOutScale(zoomInScale(initial)) - initial) < 1e-12);
+});
+
+test('relation labels render above nodes so ownership percentages remain clickable', () => {
+  const paths = { id: 'paths' };
+  const nodes = { id: 'nodes' };
+  const labels = { id: 'labels' };
+  assert.deepEqual(graphLayerOrder(paths, nodes, labels), [paths, nodes, labels]);
 });
 
 test('ownership tree preserves parent-child branches and marks cycles', () => {

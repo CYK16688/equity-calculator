@@ -12,6 +12,7 @@ import {
 } from './financing.js';
 import { calculateOwnershipQuery } from './ownership-query.js';
 import {
+  graphLayerOrder,
   nodeDisplayLabel,
   suggestUniqueNodeName,
   zoomInScale,
@@ -1097,13 +1098,14 @@ function renderGraph() {
   const relationRoutes = buildRelationRoutes(nodes);
   const occupiedLabels = [];
   const relationPathStage = createSvgElement('g', { class: 'relation-path-layer' });
+  const nodeStage = createSvgElement('g', { class: 'node-layer' });
   const relationLabelStage = createSvgElement('g', { class: 'relation-label-layer' });
   graphData.links.forEach(relation => drawRelation(
     relationPathStage, relationLabelStage, relation, relationRoutes.get(relation.id), occupiedLabels
   ));
-  stage.append(relationPathStage, relationLabelStage);
-  drawRelationDraft(stage, nodes);
-  graphData.nodes.forEach(node => drawNode(stage, node));
+  drawRelationDraft(relationPathStage, nodes);
+  graphData.nodes.forEach(node => drawNode(nodeStage, node));
+  stage.append(...graphLayerOrder(relationPathStage, nodeStage, relationLabelStage));
   svg.appendChild(stage);
   updateOwnershipQueryHighlight();
   zoomValue.textContent = `${Math.round(view.scale * 100)}%`;
