@@ -668,6 +668,168 @@ test('a new relation in a tight shared layer does not squeeze older tracks upwar
   });
 });
 
+test('routing hints persist lane and label identities for later node drags', () => {
+  const nodes = [
+    { id: 'source-left', x: 0, y: 0, width: 160, height: 88 },
+    { id: 'source-right', x: 220, y: 0, width: 160, height: 88 },
+    { id: 'target', x: 150, y: 340, width: 220, height: 100 }
+  ];
+  const links = assignEquityRoutingHints(nodes, [
+    { id: 'left-target', from: 'source-left', to: 'target', percent: '50%' },
+    { id: 'right-target', from: 'source-right', to: 'target', percent: '50%' }
+  ]);
+
+  links.forEach(link => {
+    assert.ok(Number.isInteger(link.laneSlot) && link.laneSlot >= 0, `${link.id} should persist a lane slot`);
+    assert.ok(Number.isInteger(link.labelTier) && link.labelTier >= 0, `${link.id} should persist a label tier`);
+  });
+});
+
+test('dragging one node leaves every unrelated route and label unchanged', () => {
+  const nodes = [
+    ...Array.from({ length: 6 }, (_, index) => ({
+      id: `source-${index}`,
+      x: index * 220,
+      y: 0,
+      width: 160,
+      height: 88
+    })),
+    ...Array.from({ length: 3 }, (_, index) => ({
+      id: `target-${index}`,
+      x: 150 + index * 420,
+      y: 340,
+      width: 220,
+      height: 100
+    }))
+  ];
+  const links = assignEquityRoutingHints(nodes, [
+    { id: 'source-0-target-0', from: 'source-0', to: 'target-0', percent: '20%' },
+    { id: 'source-0-target-1', from: 'source-0', to: 'target-1', percent: '30%' },
+    { id: 'source-0-target-2', from: 'source-0', to: 'target-2', percent: '50%' },
+    { id: 'source-1-target-0', from: 'source-1', to: 'target-0', percent: '40%' },
+    { id: 'source-1-target-1', from: 'source-1', to: 'target-1', percent: '60%' }
+  ]);
+  const before = calculateEquityRelationRoutes(nodes, links);
+  const movedNodes = nodes.map(node => node.id === 'source-0' ? { ...node, x: 1150 } : node);
+  const after = calculateEquityRelationRoutes(movedNodes, links);
+
+  ['source-1-target-0', 'source-1-target-1'].forEach(linkId => {
+    const beforeRoute = relationRoute(before, linkId);
+    const afterRoute = relationRoute(after, linkId);
+    assert.equal(afterRoute.pathData, beforeRoute.pathData, `${linkId} is unrelated to the dragged node`);
+    assert.deepEqual(afterRoute.labelAnchor, beforeRoute.labelAnchor, `${linkId} label should stay with its route`);
+  });
+});
+
+test('dragging a target keeps each percentage label on its own final stem', () => {
+  const nodes = [
+    { id: 'holding-company', x: 802, y: 873, width: 220, height: 88 },
+    { id: 'new-shareholder', x: 1193, y: 873, width: 220, height: 88 },
+    { id: 'target-left', x: 629, y: 1078, width: 220, height: 88 },
+    { id: 'target-middle', x: 913, y: 1078, width: 220, height: 88 },
+    { id: 'target-right', x: 1197, y: 1078, width: 220, height: 88 }
+  ];
+  const links = assignEquityRoutingHints(nodes, [
+    { id: 'holding-left', from: 'holding-company', to: 'target-left', percent: '100%' },
+    { id: 'holding-middle', from: 'holding-company', to: 'target-middle', percent: '100%' },
+    { id: 'holding-right', from: 'holding-company', to: 'target-right', percent: '100%' },
+    { id: 'shareholder-right', from: 'new-shareholder', to: 'target-right', percent: '0%' }
+  ]);
+  const before = calculateEquityRelationRoutes(nodes, links);
+  const movedNodes = nodes.map(node => node.id === 'target-right'
+    ? { ...node, x: 1420, y: 960 }
+    : node);
+  const routes = calculateEquityRelationRoutes(movedNodes, links);
+
+  ['holding-right', 'shareholder-right'].forEach(linkId => {
+    const link = links.find(candidate => candidate.id === linkId);
+    const route = relationRoute(routes, link.id);
+    assert.equal(route.labelAnchor.x, route.endX, `${link.id} label should follow the final target stem`);
+    assert.ok(
+      route.segments.some(segment => segment.x1 === route.labelAnchor.x
+        && segment.x2 === route.labelAnchor.x
+        && route.labelAnchor.y >= Math.min(segment.y1, segment.y2)
+        && route.labelAnchor.y <= Math.max(segment.y1, segment.y2)),
+      `${link.id} label should lie on its own visible vertical segment`
+    );
+  });
+  ['holding-left', 'holding-middle'].forEach(linkId => {
+    assert.equal(
+      relationRoute(routes, linkId).pathData,
+      relationRoute(before, linkId).pathData,
+      `${linkId} should ignore a distant dragged target`
+    );
+    assert.deepEqual(
+      relationRoute(routes, linkId).labelAnchor,
+      relationRoute(before, linkId).labelAnchor,
+      `${linkId} label should not move with another target`
+    );
+  });
+});
+
+test('dragging one long relation source does not reassign another long route corridor', () => {
+  const nodes = [
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `source-${index}`, x: index * 280, y: 0, width: 140, height: 80
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `middle-${index}`, x: 80 + index * 280, y: 230, width: 180, height: 100
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `target-${index}`, x: index * 280, y: 500, width: 180, height: 90
+    }))
+  ];
+  const relation = id => {
+    const [, from, to] = id.match(/^long-(\d)-(\d)$/) || [];
+    return { id, from: `source-${from}`, to: `target-${to}`, percent: '10%' };
+  };
+  const links = assignEquityRoutingHints(nodes, [
+    ...['long-0-2', 'long-1-2', 'long-2-0', 'long-2-3', 'long-3-0', 'long-3-1', 'long-3-3']
+      .map(relation),
+    { id: 'source-middle-0', from: 'source-0', to: 'middle-0', percent: '50%' },
+    { id: 'middle-target-1', from: 'middle-1', to: 'target-1', percent: '50%' },
+    { id: 'middle-target-2', from: 'middle-2', to: 'target-2', percent: '50%' },
+    { id: 'middle-target-3', from: 'middle-3', to: 'target-3', percent: '50%' }
+  ]);
+  const before = calculateEquityRelationRoutes(nodes, links);
+  const movedNodes = nodes.map(node => node.id === 'source-0' ? { ...node, x: 900 } : node);
+  const after = calculateEquityRelationRoutes(movedNodes, links);
+
+  assert.equal(
+    relationRoute(after, 'long-3-0').pathData,
+    relationRoute(before, 'long-3-0').pathData,
+    'an unrelated long route must keep its persisted corridor'
+  );
+});
+
+test('dense percentage labels remain on their own visible target stems', () => {
+  const target = { id: 'fund', x: 300, y: 360, width: 220, height: 100 };
+  const nodes = [
+    target,
+    ...Array.from({ length: 12 }, (_, index) => ({
+      id: `shareholder-${index}`, x: index * 100, y: 0, width: 80, height: 90
+    }))
+  ];
+  const links = assignEquityRoutingHints(nodes, Array.from({ length: 12 }, (_, index) => ({
+    id: `shareholder-fund-${index}`,
+    from: `shareholder-${index}`,
+    to: 'fund',
+    percent: '0%'
+  })));
+  const routes = calculateEquityRelationRoutes(nodes, links);
+
+  links.forEach(link => {
+    const route = relationRoute(routes, link.id);
+    assert.ok(
+      route.segments.some(segment => segment.x1 === route.labelAnchor.x
+        && segment.x2 === route.labelAnchor.x
+        && route.labelAnchor.y >= Math.min(segment.y1, segment.y2)
+        && route.labelAnchor.y <= Math.max(segment.y1, segment.y2)),
+      `${link.id} label must remain on its own final vertical stem even in a dense target`
+    );
+  });
+});
+
 test('relation labels stay on their own target stems while dense labels stack vertically', () => {
   const target = { id: 'fund', x: 300, y: 360, width: 180, height: 100 };
   const nodes = [

@@ -129,14 +129,21 @@ function normalizeData(candidate) {
         suffix += 1;
       }
       usedRelationIds.add(id);
+      const optionalNumber = value => value !== null && value !== '' && value !== undefined
+        && Number.isFinite(Number(value))
+        ? Number(value)
+        : null;
       return {
         id,
         from: String(link.from),
         to: String(link.to),
         percent: String(link.percent || link.text || '0%'),
-        routeOrder: Number.isFinite(Number(link.routeOrder)) ? Number(link.routeOrder) : null,
-        sourcePort: Number.isFinite(Number(link.sourcePort)) ? Number(link.sourcePort) : null,
-        targetPort: Number.isFinite(Number(link.targetPort)) ? Number(link.targetPort) : null
+        routeOrder: optionalNumber(link.routeOrder),
+        sourcePort: optionalNumber(link.sourcePort),
+        targetPort: optionalNumber(link.targetPort),
+        laneSlot: optionalNumber(link.laneSlot),
+        labelTier: optionalNumber(link.labelTier),
+        corridorSlot: optionalNumber(link.corridorSlot)
       };
     });
   data.links = assignEquityRoutingHints(data.nodes, data.links);
@@ -1968,6 +1975,9 @@ function autoLayout() {
       delete link.routeOrder;
       delete link.sourcePort;
       delete link.targetPort;
+      delete link.laneSlot;
+      delete link.labelTier;
+      delete link.corridorSlot;
     });
     const layoutNodes = graphData.nodes.map(node => {
       const size = nodeDimensions(node);
