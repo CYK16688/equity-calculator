@@ -12,6 +12,7 @@ import {
 } from './financing.js';
 import { calculateOwnershipQuery } from './ownership-query.js';
 import {
+  assignEquityRoutingHints,
   calculateEquityAutoLayout,
   calculateEquityHierarchyLevels,
   calculateEquityRelationRoutes,
@@ -132,9 +133,13 @@ function normalizeData(candidate) {
         id,
         from: String(link.from),
         to: String(link.to),
-        percent: String(link.percent || link.text || '0%')
+        percent: String(link.percent || link.text || '0%'),
+        routeOrder: Number.isFinite(Number(link.routeOrder)) ? Number(link.routeOrder) : null,
+        sourcePort: Number.isFinite(Number(link.sourcePort)) ? Number(link.sourcePort) : null,
+        targetPort: Number.isFinite(Number(link.targetPort)) ? Number(link.targetPort) : null
       };
     });
+  data.links = assignEquityRoutingHints(data.nodes, data.links);
   data.financingEvents = (Array.isArray(data.financingEvents) ? data.financingEvents : []).map((event, index) => ({
     id: String(event.id || `financing-${index + 1}`),
     companyId: String(event.companyId || ''),
@@ -1957,6 +1962,13 @@ function deleteSelectedNode() {
 function autoLayout() {
   if (!graphData.nodes.length) return;
   commit('已自动整理图谱布局', () => {
+    // Explicit automatic layout is the one operation allowed to globally
+    // re-optimise ports. Ordinary drag-created relations keep existing hints.
+    graphData.links.forEach(link => {
+      delete link.routeOrder;
+      delete link.sourcePort;
+      delete link.targetPort;
+    });
     const layoutNodes = graphData.nodes.map(node => {
       const size = nodeDimensions(node);
       return { ...node, layoutWidth: size.width, layoutHeight: size.height };

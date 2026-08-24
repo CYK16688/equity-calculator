@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as graphUiModel from '../src/graph-ui-model.js';
 import {
+  assignEquityRoutingHints,
   buildOwnershipTree,
   calculateEquityHierarchyLevels,
   graphLayerOrder,
@@ -555,6 +556,114 @@ test('relation routing assigns target ports monotonically by source x position',
     assert.ok(
       endX > target.x && endX < target.x + target.width,
       `target port ${endX} should lie inside the fund top edge`
+    );
+  });
+});
+
+test('adding one relation preserves every existing routing hint', () => {
+  const target = { id: 'fund', x: 300, y: 360, width: 220, height: 100 };
+  const nodes = [
+    target,
+    ...Array.from({ length: 7 }, (_, index) => ({
+      id: `shareholder-${index}`,
+      x: index * 140,
+      y: 0,
+      width: 100,
+      height: 90
+    }))
+  ];
+  const existing = assignEquityRoutingHints(nodes, Array.from({ length: 6 }, (_, index) => ({
+    id: `relation-${index}`,
+    from: `shareholder-${index}`,
+    to: 'fund',
+    percent: index === 0 ? '100%' : '0%'
+  })));
+  const extended = assignEquityRoutingHints(nodes, [
+    ...existing,
+    { id: 'relation-6', from: 'shareholder-6', to: 'fund', percent: '0%' }
+  ]);
+
+  existing.forEach(link => {
+    const after = extended.find(candidate => candidate.id === link.id);
+    assert.deepEqual(
+      {
+        routeOrder: after.routeOrder,
+        sourcePort: after.sourcePort,
+        targetPort: after.targetPort
+      },
+      {
+        routeOrder: link.routeOrder,
+        sourcePort: link.sourcePort,
+        targetPort: link.targetPort
+      },
+      `${link.id} should keep its persisted routing identity`
+    );
+  });
+});
+
+test('adding one relation does not move any existing route or percentage label', () => {
+  const target = { id: 'fund', x: 300, y: 360, width: 220, height: 100 };
+  const nodes = [
+    target,
+    ...Array.from({ length: 7 }, (_, index) => ({
+      id: `shareholder-${index}`,
+      x: index * 140,
+      y: 0,
+      width: 100,
+      height: 90
+    }))
+  ];
+  const existing = assignEquityRoutingHints(nodes, Array.from({ length: 6 }, (_, index) => ({
+    id: `relation-${index}`,
+    from: `shareholder-${index}`,
+    to: 'fund',
+    percent: index === 0 ? '100%' : '0%'
+  })));
+  const before = calculateEquityRelationRoutes(nodes, existing);
+  const extended = assignEquityRoutingHints(nodes, [
+    ...existing,
+    { id: 'relation-6', from: 'shareholder-6', to: 'fund', percent: '0%' }
+  ]);
+  const after = calculateEquityRelationRoutes(nodes, extended);
+
+  existing.forEach(link => {
+    const beforeRoute = relationRoute(before, link.id);
+    const afterRoute = relationRoute(after, link.id);
+    assert.equal(afterRoute.pathData, beforeRoute.pathData, `${link.id} path should remain fixed`);
+    assert.deepEqual(
+      afterRoute.labelAnchor,
+      beforeRoute.labelAnchor,
+      `${link.id} percentage label should remain fixed`
+    );
+  });
+});
+
+test('a new relation in a tight shared layer does not squeeze older tracks upward', () => {
+  const nodes = [
+    { id: 'holding-company', x: 802, y: 873, width: 220, height: 88 },
+    { id: 'new-shareholder', x: 1193, y: 873, width: 220, height: 88 },
+    { id: 'subsidiary-left', x: 629, y: 1078, width: 220, height: 88 },
+    { id: 'subsidiary-middle', x: 913, y: 1078, width: 220, height: 88 },
+    { id: 'subsidiary-right', x: 1197, y: 1078, width: 220, height: 88 }
+  ];
+  const existing = assignEquityRoutingHints(nodes, [
+    { id: 'holding-left', from: 'holding-company', to: 'subsidiary-left', percent: '100%' },
+    { id: 'holding-middle', from: 'holding-company', to: 'subsidiary-middle', percent: '100%' },
+    { id: 'holding-right', from: 'holding-company', to: 'subsidiary-right', percent: '100%' },
+    { id: 'shareholder-right', from: 'new-shareholder', to: 'subsidiary-right', percent: '0%' }
+  ]);
+  const before = calculateEquityRelationRoutes(nodes, existing);
+  const extended = assignEquityRoutingHints(nodes, [
+    ...existing,
+    { id: 'shareholder-left', from: 'new-shareholder', to: 'subsidiary-left', percent: '0%' }
+  ]);
+  const after = calculateEquityRelationRoutes(nodes, extended);
+
+  existing.forEach(link => {
+    assert.equal(
+      relationRoute(after, link.id).pathData,
+      relationRoute(before, link.id).pathData,
+      `${link.id} should not be squeezed by the newly created label tier`
     );
   });
 });

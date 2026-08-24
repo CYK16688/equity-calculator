@@ -63,6 +63,87 @@ export function zoomOutScale(scale) {
   return Number(scale) / ZOOM_STEP;
 }
 
+/**
+ * Give every relation stable routing identities. Existing hints are preserved,
+ * while a newly added relation takes a free port between its neighbours. This
+ * prevents one drag-created relation from redistributing every existing port.
+ */
+export function assignEquityRoutingHints(nodes, links) {
+  const normalizedNodes = (Array.isArray(nodes) ? nodes : []).map(node => ({
+    ...node,
+    id: String(node?.id || ''),
+    x: Number(node?.x) || 0,
+    width: Math.max(80, Number(node?.layoutWidth ?? node?.width) || (node?.root ? 330 : 220))
+  }));
+  const nodeById = new Map(normalizedNodes.map(node => [node.id, node]));
+  const result = (Array.isArray(links) ? links : []).map(link => ({ ...link }));
+  const usedOrders = new Set();
+  let nextOrder = Math.max(-1, ...result.map(link => {
+    const value = Number(link?.routeOrder);
+    return Number.isFinite(value) && value >= 0 ? Math.floor(value) : -1;
+  })) + 1;
+
+  result.forEach(link => {
+    const requested = Number(link.routeOrder);
+    if (Number.isFinite(requested) && requested >= 0 && !usedOrders.has(Math.floor(requested))) {
+      link.routeOrder = Math.floor(requested);
+    } else {
+      while (usedOrders.has(nextOrder)) nextOrder += 1;
+      link.routeOrder = nextOrder;
+      nextOrder += 1;
+    }
+    usedOrders.add(link.routeOrder);
+  });
+
+  const counterpartCenter = id => {
+    const node = nodeById.get(String(id));
+    return node ? node.x + node.width / 2 : 0;
+  };
+  const normalizePort = value => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 && numeric < 1
+      ? Math.max(0.04, Math.min(0.96, numeric))
+      : null;
+  };
+  const assignPorts = (groupKey, counterpartKey, portKey) => {
+    const groups = new Map();
+    result.forEach(link => {
+      const key = String(link[groupKey] || '');
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(link);
+      link[portKey] = normalizePort(link[portKey]);
+    });
+    groups.forEach(relations => {
+      const ordered = [...relations].sort((left, right) =>
+        counterpartCenter(left[counterpartKey]) - counterpartCenter(right[counterpartKey])
+        || left.routeOrder - right.routeOrder
+        || String(left.id || '').localeCompare(String(right.id || ''))
+      );
+      if (ordered.every(link => link[portKey] === null)) {
+        ordered.forEach((link, index) => {
+          link[portKey] = (index + 1) / (ordered.length + 1);
+        });
+        return;
+      }
+      ordered.forEach((link, index) => {
+        if (link[portKey] !== null) return;
+        const previous = [...ordered.slice(0, index)].reverse()
+          .find(candidate => candidate[portKey] !== null);
+        const next = ordered.slice(index + 1)
+          .find(candidate => candidate[portKey] !== null);
+        if (previous && next) link[portKey] = (previous[portKey] + next[portKey]) / 2;
+        else if (previous) link[portKey] = (previous[portKey] + 0.96) / 2;
+        else if (next) link[portKey] = (0.04 + next[portKey]) / 2;
+        else link[portKey] = 0.5;
+      });
+    });
+  };
+
+  assignPorts('from', 'to', 'sourcePort');
+  assignPorts('to', 'from', 'targetPort');
+  return result;
+}
+
 export function graphLayerOrder(relationPathLayer, nodeLayer, relationLabelLayer) {
   return [relationPathLayer, nodeLayer, relationLabelLayer];
 }
@@ -580,8 +661,14 @@ function assignRelationLabelAnchors(routes) {
 
   routesByTarget.forEach(targetRoutes => {
     const occupied = [];
+    const hasStableOrder = targetRoutes.every(route =>
+      Number.isFinite(Number(route.relation.routeOrder))
+    );
     [...targetRoutes]
-      .sort((left, right) => left.endX - right.endX || left.relation.id.localeCompare(right.relation.id))
+      .sort((left, right) => hasStableOrder
+        ? Number(left.relation.routeOrder) - Number(right.relation.routeOrder)
+          || left.relation.id.localeCompare(right.relation.id)
+        : left.endX - right.endX || left.relation.id.localeCompare(right.relation.id))
       .forEach(route => {
         const width = relationLabelWidth(route);
         const anchorX = route.endX;
@@ -663,6 +750,13 @@ function compareRouteLaneScores(left, right) {
 function optimizeBandRouteLanes(bandRoutes, forward) {
   if (bandRoutes.length <= 1) {
     bandRoutes.forEach(route => { route.laneIndex = 0; });
+    return;
+  }
+  if (bandRoutes.every(route => Number.isFinite(Number(route.relation.routeOrder)))) {
+    assignRouteLanes([...bandRoutes].sort((left, right) =>
+      Number(left.relation.routeOrder) - Number(right.relation.routeOrder)
+      || left.relation.id.localeCompare(right.relation.id)
+    ));
     return;
   }
   let best = null;
@@ -786,12 +880,18 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const incomingRelations = incoming.get(link.to);
     const outgoingIndex = outgoingRelations.findIndex(candidate => candidate.id === link.id);
     const incomingIndex = incomingRelations.findIndex(candidate => candidate.id === link.id);
-    const startX = outgoingRelations.length <= 1
-      ? nodeCenterX(from)
-      : from.x + from.width * ((outgoingIndex + 1) / (outgoingRelations.length + 1));
-    const endX = incomingRelations.length <= 1
-      ? nodeCenterX(to)
-      : to.x + to.width * ((incomingIndex + 1) / (incomingRelations.length + 1));
+    const sourcePort = Number(link.sourcePort);
+    const targetPort = Number(link.targetPort);
+    const startX = Number.isFinite(sourcePort) && sourcePort > 0 && sourcePort < 1
+      ? from.x + from.width * sourcePort
+      : outgoingRelations.length <= 1
+        ? nodeCenterX(from)
+        : from.x + from.width * ((outgoingIndex + 1) / (outgoingRelations.length + 1));
+    const endX = Number.isFinite(targetPort) && targetPort > 0 && targetPort < 1
+      ? to.x + to.width * targetPort
+      : incomingRelations.length <= 1
+        ? nodeCenterX(to)
+        : to.x + to.width * ((incomingIndex + 1) / (incomingRelations.length + 1));
     const startY = from.y + from.height;
     const endY = to.y;
     const sourceLevel = levels.get(link.from) || 0;
@@ -826,6 +926,43 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const forward = targetLevel > sourceLevel && targetTop > sourceBottom;
     const availableGap = Math.max(48, targetTop - sourceBottom);
     optimizeBandRouteLanes(bandRoutes, forward);
+    const stableRouting = bandRoutes.every(route =>
+      Number.isFinite(Number(route.relation.routeOrder))
+    );
+    if (stableRouting) {
+      // Stable relations use only their own geometry and earlier relations as
+      // constraints. Appending a new relation can therefore never move an old
+      // horizontal track; the new route yields around existing percentage pills.
+      bandRoutes.forEach(route => {
+        if (!forward) {
+          route.midY = Math.max(route.startY, route.endY) + 32 + route.laneIndex * laneGap;
+          return;
+        }
+        let midY = route.startY + 32 + route.laneIndex * laneGap;
+        const interval = routeHorizontalInterval(route);
+        const routeOrder = Number(route.relation.routeOrder);
+        const earlierLabelBoxes = bandRoutes
+          .filter(candidate => Number(candidate.relation.routeOrder) <= routeOrder)
+          .map(candidate => ({
+            ...relationLabelBox(
+              candidate.labelAnchor.x,
+              candidate.labelAnchor.y,
+              relationLabelWidth(candidate)
+            ),
+            routeOrder: Number(candidate.relation.routeOrder)
+          }))
+          .filter(box => box.left < interval.right && box.right > interval.left);
+        for (let pass = 0; pass < earlierLabelBoxes.length + 1; pass += 1) {
+          const collisions = earlierLabelBoxes.filter(box =>
+            midY > box.top - 10 && midY < box.bottom + 10
+          );
+          if (!collisions.length) break;
+          midY = Math.min(...collisions.map(box => box.top - 10));
+        }
+        route.midY = Math.max(route.startY + 2, midY);
+      });
+      return;
+    }
     const maxLane = Math.max(0, ...bandRoutes.map(route => route.laneIndex));
     const labelBandTop = Math.min(...bandRoutes.map(route => route.labelBandTop));
     const laneCeiling = labelBandTop - 10;
