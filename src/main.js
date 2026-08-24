@@ -144,6 +144,8 @@ function normalizeData(candidate) {
         sourcePort: optionalNumber(link.sourcePort),
         targetPort: optionalNumber(link.targetPort),
         laneSlot: optionalNumber(link.laneSlot),
+        sourceLaneSlot: optionalNumber(link.sourceLaneSlot),
+        targetLaneSlot: optionalNumber(link.targetLaneSlot),
         labelTier: optionalNumber(link.labelTier),
         corridorSlot: optionalNumber(link.corridorSlot)
       };
@@ -773,6 +775,11 @@ function drawRelation(pathStage, labelStage, relation, route) {
   const pathData = route.pathData;
   group.appendChild(createSvgElement('path', {
     class: 'relation-hitbox', d: pathData, fill: 'none', stroke: 'transparent', 'stroke-width': '16'
+  }));
+  group.appendChild(createSvgElement('path', {
+    class: 'relation-casing', d: pathData, fill: 'none', stroke: '#fff',
+    'stroke-width': active ? '8' : '7', 'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    'vector-effect': 'non-scaling-stroke'
   }));
   group.appendChild(createSvgElement('path', {
     class: 'relation-line', d: pathData, fill: 'none',
@@ -1977,7 +1984,7 @@ function pasteSelection() {
         from: idMap.get(source.from),
         to: idMap.get(source.to)
       };
-      ['routeOrder', 'sourcePort', 'targetPort', 'laneSlot', 'labelTier', 'corridorSlot']
+      ['routeOrder', 'sourcePort', 'targetPort', 'laneSlot', 'sourceLaneSlot', 'targetLaneSlot', 'labelTier', 'corridorSlot']
         .forEach(key => delete link[key]);
       return link;
     });
@@ -2118,6 +2125,8 @@ function applyAutomaticLayout() {
     delete link.sourcePort;
     delete link.targetPort;
     delete link.laneSlot;
+    delete link.sourceLaneSlot;
+    delete link.targetLaneSlot;
     delete link.labelTier;
     delete link.corridorSlot;
   });

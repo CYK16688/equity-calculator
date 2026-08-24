@@ -724,8 +724,16 @@ test('routing hints persist lane and label identities for later node drags', () 
 
   links.forEach(link => {
     assert.ok(Number.isInteger(link.laneSlot) && link.laneSlot >= 0, `${link.id} should persist a lane slot`);
+    assert.ok(Number.isInteger(link.sourceLaneSlot) && link.sourceLaneSlot >= 0, `${link.id} should persist a source lane slot`);
+    assert.ok(Number.isInteger(link.targetLaneSlot) && link.targetLaneSlot >= 0, `${link.id} should persist a target lane slot`);
     assert.ok(Number.isInteger(link.labelTier) && link.labelTier >= 0, `${link.id} should persist a label tier`);
   });
+
+  const [migrated] = assignEquityRoutingHints(nodes, [
+    { id: 'legacy-route', from: 'source-left', to: 'target', percent: '100%', routeOrder: 0, laneSlot: 3 }
+  ]);
+  assert.equal(migrated.sourceLaneSlot, 3, 'legacy laneSlot should migrate to the source channel');
+  assert.equal(migrated.targetLaneSlot, 3, 'legacy laneSlot should migrate to the target channel');
 });
 
 test('dragging one node leaves routes outside its shared source and target bundles unchanged', () => {
@@ -1224,6 +1232,62 @@ test('relation routing keeps the final target approach below a nearby obstacle',
       segmentIntersectsRectangleInterior(segment, blocker),
       false,
       `near-target segment ${index} must stay outside the nearby obstacle`
+    );
+  });
+});
+
+test('cross-layer ownership routes reserve independent source and target tracks', () => {
+  const nodes = [
+    { id: 'li', name: '李总', width: 260, height: 100 },
+    { id: 'lu', name: '卢总', width: 260, height: 100 },
+    { id: 'cheng', name: '承', width: 260, height: 100 },
+    { id: 'gp', name: '有限责任公司 GP', width: 260, height: 100 },
+    { id: 'lp2', name: 'LP2', width: 260, height: 100 },
+    { id: 'fund', name: 'GP+LP 有限合伙公司', width: 300, height: 100 }
+  ];
+  const links = [
+    { id: 'li-gp', from: 'li', to: 'gp', percent: '50%' },
+    { id: 'cheng-gp', from: 'cheng', to: 'gp', percent: '49.9%' },
+    { id: 'lu-gp', from: 'lu', to: 'gp', percent: '0.1%' },
+    { id: 'gp-fund', from: 'gp', to: 'fund', percent: '100%' },
+    { id: 'lp2-fund', from: 'lp2', to: 'fund', percent: '100%' },
+    { id: 'li-fund', from: 'li', to: 'fund', percent: '0%' },
+    { id: 'lu-fund', from: 'lu', to: 'fund', percent: '0%' }
+  ];
+  const layout = calculateEquityAutoLayout(nodes, links);
+  const placedNodes = nodes.map(node => ({ ...node, ...layout.positions.get(node.id) }));
+  const routes = [...calculateEquityRelationRoutes(placedNodes, links).routes.values()];
+  const overlaps = [];
+
+  routes.forEach((leftRoute, leftIndex) => {
+    routes.slice(leftIndex + 1).forEach(rightRoute => {
+      if (leftRoute.bandKey === rightRoute.bandKey) return;
+      leftRoute.segments.forEach(leftSegment => {
+        rightRoute.segments.forEach(rightSegment => {
+          if (leftSegment.orientation !== 'horizontal' || rightSegment.orientation !== 'horizontal') return;
+          if (leftSegment.y1 !== rightSegment.y1) return;
+          if (horizontalSegmentsOverlap(leftSegment, rightSegment)) {
+            overlaps.push([leftRoute.relation.id, rightRoute.relation.id]);
+          }
+        });
+      });
+    });
+  });
+
+  assert.deepEqual(overlaps, [], 'long ownership routes must not reuse adjacent-layer horizontal tracks');
+  ['li-fund', 'lu-fund'].forEach(linkId => {
+    const route = relationRoute({ routes: new Map(routes.map(route => [route.relation.id, route])) }, linkId);
+    assert.ok(Number.isInteger(route.sourceLaneIndex), `${linkId} should have an independent source lane`);
+    assert.ok(Number.isInteger(route.targetLaneIndex), `${linkId} should have an independent target lane`);
+    assert.notEqual(route.sourceLaneY, route.targetLaneY, `${linkId} source and target tracks should be split`);
+  });
+
+  const shuffled = calculateEquityRelationRoutes([...placedNodes].reverse(), [...links].reverse());
+  routes.forEach(route => {
+    assert.equal(
+      relationRoute(shuffled, route.relation.id).pathData,
+      route.pathData,
+      `${route.relation.id} cross-layer routing should not depend on input order`
     );
   });
 });

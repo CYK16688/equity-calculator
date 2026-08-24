@@ -275,6 +275,13 @@ export function assignEquityRoutingHints(nodes, links) {
     });
   });
 
+  // Old documents only have laneSlot. Keep it as a migration fallback while
+  // newer routes remember independent source and target channel identities.
+  result.forEach(link => {
+    link.sourceLaneSlot = normalizeSlot(link.sourceLaneSlot) ?? link.laneSlot ?? 0;
+    link.targetLaneSlot = normalizeSlot(link.targetLaneSlot) ?? link.laneSlot ?? 0;
+  });
+
   // Long cross-layer routes must not borrow a corridor selected by whichever
   // relation happened to be processed first during the latest render.
   linksByBand.forEach(relations => {
@@ -894,8 +901,18 @@ export function calculateEquityAutoLayout(nodes, links, options = {}) {
       const labelDepth = route.endY - route.labelBandTop;
       const current = reserveByTargetLevel.get(route.targetLevel) || { labelDepth: 0, maxLane: 0 };
       current.labelDepth = Math.max(current.labelDepth, labelDepth);
-      current.maxLane = Math.max(current.maxLane, route.laneIndex || 0);
+      current.maxLane = Math.max(
+        current.maxLane,
+        route.laneIndex || 0,
+        route.targetLaneIndex || 0
+      );
       reserveByTargetLevel.set(route.targetLevel, current);
+
+      const sourceGapTargetLevel = levelNumbers.find(level => level > route.sourceLevel);
+      if (sourceGapTargetLevel === undefined) return;
+      const sourceReserve = reserveByTargetLevel.get(sourceGapTargetLevel) || { labelDepth: 0, maxLane: 0 };
+      sourceReserve.maxLane = Math.max(sourceReserve.maxLane, route.sourceLaneIndex || 0);
+      reserveByTargetLevel.set(sourceGapTargetLevel, sourceReserve);
     });
     let expanded = false;
     reserveByTargetLevel.forEach((reserve, targetLevel) => {
@@ -1525,9 +1542,109 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     if (!hasStableCorridor) usedCorridors.push(route.corridorX);
   });
 
+  // A semantic long edge crosses more than one physical layer gap. Its source
+  // outlet and target approach therefore cannot share the single laneSlot used
+  // by an adjacent-layer edge. Build one routing track per physical gap so
+  // short and long relations compete for the same visible channel.
+  const levelNumbers = [...new Set(normalizedNodes.map(node => levels.get(node.id) || 0))]
+    .sort((left, right) => left - right);
+  const nodesByLevel = new Map(levelNumbers.map(level => [level, []]));
+  normalizedNodes.forEach(node => nodesByLevel.get(levels.get(node.id) || 0)?.push(node));
+  const gaps = new Map();
+  levelNumbers.slice(0, -1).forEach((upperLevel, index) => {
+    const lowerLevel = levelNumbers[index + 1];
+    gaps.set(`${upperLevel}:${lowerLevel}`, {
+      upperLevel,
+      lowerLevel,
+      top: Math.max(...nodesByLevel.get(upperLevel).map(node => node.y + node.height)),
+      bottom: Math.min(...nodesByLevel.get(lowerLevel).map(node => node.y)),
+      tracks: []
+    });
+  });
+  const normalizedLaneSlot = value => {
+    if (value === null || value === '') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric >= 0 ? Math.floor(numeric) : null;
+  };
+  const trackSlot = (route, kind) => normalizedLaneSlot(
+    kind === 'target'
+      ? route.relation.targetLaneSlot ?? route.relation.laneSlot
+      : route.relation.sourceLaneSlot ?? route.relation.laneSlot
+  );
+  const addGapTrack = (gap, route, kind, startX, endX, startY = gap?.top, endY = gap?.bottom) => {
+    if (!gap) return;
+    const track = {
+      relation: {
+        ...route.relation,
+        id: `${route.relation.id}::${kind}`,
+        laneSlot: trackSlot(route, kind)
+      },
+      route,
+      kind,
+      startX,
+      endX,
+      startY,
+      endY,
+      laneIndex: 0
+    };
+    gap.tracks.push(track);
+  };
+
+  routes.forEach(route => {
+    const sourceIndex = levelNumbers.indexOf(route.sourceLevel);
+    const targetIndex = levelNumbers.indexOf(route.targetLevel);
+    route.crossLayer = sourceIndex >= 0 && targetIndex > sourceIndex + 1;
+    if (targetIndex <= sourceIndex) return;
+    const sourceGap = gaps.get(`${levelNumbers[sourceIndex]}:${levelNumbers[sourceIndex + 1]}`);
+    const targetGap = gaps.get(`${levelNumbers[targetIndex - 1]}:${levelNumbers[targetIndex]}`);
+    if (!route.crossLayer) {
+      addGapTrack(sourceGap, route, 'adjacent', route.startX, route.endX, route.startY, route.endY);
+      return;
+    }
+    if (!Number.isFinite(route.corridorX)) route.corridorX = (route.startX + route.endX) / 2;
+    addGapTrack(sourceGap, route, 'source', route.startX, route.corridorX, route.startY, sourceGap?.bottom);
+    addGapTrack(targetGap, route, 'target', route.corridorX, route.endX, targetGap?.top, route.endY);
+  });
+
+  gaps.forEach(gap => {
+    if (!gap.tracks.length) return;
+    if (!gap.tracks.some(track => track.route.crossLayer)) return;
+    optimizeBandRouteLanes(gap.tracks, true);
+    const trackTop = Math.max(...gap.tracks.map(track => track.startY));
+    const trackBottom = Math.min(...gap.tracks.map(track => track.endY));
+    const maxLane = Math.max(0, ...gap.tracks.map(track => track.laneIndex));
+    const targetTracks = gap.tracks.filter(track =>
+      track.kind === 'adjacent' || track.kind === 'target'
+    );
+    const labelCeiling = targetTracks.length
+      ? Math.min(...targetTracks.map(track => track.route.labelBandTop)) - 10
+      : trackBottom - 18;
+    const laneStart = Math.min(labelCeiling, trackTop + 32);
+    const spacing = maxLane > 0
+      ? Math.max(12, Math.min(laneGap, (labelCeiling - laneStart) / maxLane))
+      : 0;
+    gap.tracks.forEach(track => {
+      const laneY = laneStart + track.laneIndex * spacing;
+      if (track.kind === 'adjacent') {
+        track.route.sourceLaneIndex = track.laneIndex;
+        track.route.targetLaneIndex = track.laneIndex;
+        track.route.sourceLaneY = laneY;
+        track.route.targetLaneY = laneY;
+      } else if (track.kind === 'source') {
+        track.route.sourceLaneIndex = track.laneIndex;
+        track.route.sourceLaneY = laneY;
+      } else {
+        track.route.targetLaneIndex = track.laneIndex;
+        track.route.targetLaneY = laneY;
+      }
+    });
+  });
+
   routes.forEach(route => {
     const isLong = route.obstacles.length > 0;
-    const defaultTargetLaneY = Math.max(route.midY + 24, route.endY - 42 - route.laneIndex * 14);
+    const sourceLaneY = route.sourceLaneY ?? route.midY;
+    const defaultTargetLaneY = route.targetLaneY
+      ?? Math.max(sourceLaneY + 24, route.endY - 42 - route.laneIndex * 14);
     const lastObstacleBottom = isLong
       ? Math.max(...route.obstacles.map(obstacle => obstacle.bottom))
       : -Infinity;
@@ -1541,21 +1658,23 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const targetLaneY = canReserveLabelBand
       ? Math.min(unclampedTargetLaneY, labelLaneCeiling)
       : unclampedTargetLaneY;
-    const points = isLong
+    const points = route.crossLayer || isLong
       ? [
           { x: route.startX, y: route.startY },
-          { x: route.startX, y: route.midY },
-          { x: route.corridorX, y: route.midY },
+          { x: route.startX, y: sourceLaneY },
+          { x: route.corridorX, y: sourceLaneY },
           { x: route.corridorX, y: targetLaneY },
           { x: route.endX, y: targetLaneY },
           { x: route.endX, y: route.endY }
         ]
       : [
           { x: route.startX, y: route.startY },
-          { x: route.startX, y: route.midY },
-          { x: route.endX, y: route.midY },
+          { x: route.startX, y: sourceLaneY },
+          { x: route.endX, y: sourceLaneY },
           { x: route.endX, y: route.endY }
         ];
+    route.midY = sourceLaneY;
+    route.targetLaneY = targetLaneY;
     route.segments = routeSegments(points);
     route.pathData = pathFromSegments(route.segments);
   });
