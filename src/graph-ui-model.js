@@ -63,6 +63,35 @@ export function zoomOutScale(scale) {
   return Number(scale) / ZOOM_STEP;
 }
 
+export function normalizeSelectionRectangle(start, end) {
+  const startX = Number(start?.x) || 0;
+  const startY = Number(start?.y) || 0;
+  const endX = Number(end?.x) || 0;
+  const endY = Number(end?.y) || 0;
+  return {
+    x: Math.min(startX, endX),
+    y: Math.min(startY, endY),
+    width: Math.abs(endX - startX),
+    height: Math.abs(endY - startY)
+  };
+}
+
+export function nodeIdsInSelectionRectangle(nodes, rectangle) {
+  const left = Number(rectangle?.x) || 0;
+  const top = Number(rectangle?.y) || 0;
+  const right = left + Math.max(0, Number(rectangle?.width) || 0);
+  const bottom = top + Math.max(0, Number(rectangle?.height) || 0);
+  return (Array.isArray(nodes) ? nodes : [])
+    .filter(node => {
+      const nodeLeft = Number(node?.x) || 0;
+      const nodeTop = Number(node?.y) || 0;
+      const nodeRight = nodeLeft + Math.max(0, Number(node?.width) || 0);
+      const nodeBottom = nodeTop + Math.max(0, Number(node?.height) || 0);
+      return nodeRight >= left && nodeLeft <= right && nodeBottom >= top && nodeTop <= bottom;
+    })
+    .map(node => String(node.id));
+}
+
 /**
  * Give every relation stable routing identities. Existing hints are preserved,
  * while a newly added relation takes a free port between its neighbours. This

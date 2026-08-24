@@ -7,13 +7,29 @@ import {
   calculateEquityHierarchyLevels,
   graphLayerOrder,
   isGraphInteractionTarget,
+  nodeIdsInSelectionRectangle,
   nodeCanvasLabel,
   nodeDisplayLabel,
   nodeTypePresentation,
+  normalizeSelectionRectangle,
   suggestUniqueNodeName,
   zoomInScale,
   zoomOutScale
 } from '../src/graph-ui-model.js';
+
+test('selection rectangles normalize reverse drags and include intersecting nodes', () => {
+  const rectangle = normalizeSelectionRectangle({ x: 360, y: 300 }, { x: 100, y: 80 });
+  assert.deepEqual(rectangle, { x: 100, y: 80, width: 260, height: 220 });
+  assert.deepEqual(
+    nodeIdsInSelectionRectangle([
+      { id: 'inside', x: 140, y: 110, width: 100, height: 80 },
+      { id: 'edge', x: 350, y: 250, width: 80, height: 80 },
+      { id: 'outside', x: 500, y: 400, width: 100, height: 80 }
+    ], rectangle),
+    ['inside', 'edge'],
+    'touching or partially enclosed nodes should be selected, distant nodes should not'
+  );
+});
 
 function calculateEquityAutoLayout(...args) {
   assert.equal(

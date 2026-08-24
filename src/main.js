@@ -18,9 +18,11 @@ import {
   calculateEquityRelationRoutes,
   graphLayerOrder,
   isGraphInteractionTarget,
+  nodeIdsInSelectionRectangle,
   nodeCanvasLabel,
   nodeDisplayLabel,
   nodeTypePresentation,
+  normalizeSelectionRectangle,
   suggestUniqueNodeName,
   zoomInScale,
   zoomOutScale
@@ -180,6 +182,7 @@ function loadData() {
 
 let graphData = loadData();
 let selected = null;
+let selectedNodeIds = new Set();
 let historyStack = [];
 let redoStack = [];
 let searchTerm = '';
@@ -210,10 +213,13 @@ const view = {
   snapEnabled: true,
   snapGuides: null,
   panning: null,
+  selectionBox: null,
   nodeDrag: null,
   nodeResize: null,
   linkDraft: null,
-  justDragged: false
+  justDragged: false,
+  justPanned: false,
+  spacePressed: false
 };
 
 function nodeMap() {
@@ -226,6 +232,37 @@ function canEditGraph() {
 
 function relationMap() {
   return new Map(graphData.links.map(link => [link.id, link]));
+}
+
+function clearSelection() {
+  selected = null;
+  selectedNodeIds = new Set();
+}
+
+function setSelectedNodes(ids, primaryId = null) {
+  const existingIds = new Set(graphData.nodes.map(node => String(node.id)));
+  const validIds = [...new Set(ids || [])]
+    .map(String)
+    .filter(id => existingIds.has(id));
+  selectedNodeIds = new Set(validIds);
+  const primary = primaryId && selectedNodeIds.has(String(primaryId))
+    ? String(primaryId)
+    : validIds.at(-1);
+  selected = primary ? { kind: 'node', id: primary } : null;
+}
+
+function reconcileNodeSelection() {
+  if (selected?.kind !== 'node') {
+    selectedNodeIds = new Set();
+    return;
+  }
+  if (!selectedNodeIds.has(selected.id)) selectedNodeIds = new Set([selected.id]);
+  const existingIds = new Set(graphData.nodes.map(node => String(node.id)));
+  selectedNodeIds = new Set([...selectedNodeIds].filter(id => existingIds.has(id)));
+  if (!selectedNodeIds.has(selected.id)) {
+    const fallback = [...selectedNodeIds].at(-1);
+    selected = fallback ? { kind: 'node', id: fallback } : null;
+  }
 }
 
 function getOwnershipSummary(nodeId) {
@@ -373,7 +410,7 @@ function startInlineNodeEdit(id) {
   if (!node) return;
   cancelInlineRelationEdit();
   cancelInlineNodeEdit();
-  selected = { kind: 'node', id };
+  setSelectedNodes([id], id);
   renderAll();
   inlineEditingNodeId = id;
   inlineNodeName.value = node.name;
@@ -412,6 +449,7 @@ function startInlineRelationEdit(id) {
   cancelInlineNodeEdit();
   cancelInlineRelationEdit();
   selected = { kind: 'link', id };
+  selectedNodeIds = new Set();
   renderAll();
   inlineEditingRelationId = id;
   inlineRelationPercent.value = String(parsePercent(relation.percent));
@@ -506,11 +544,15 @@ function redo() {
 }
 
 function validateSelection() {
-  if (!selected) return;
+  if (!selected) {
+    selectedNodeIds = new Set();
+    return;
+  }
   const exists = selected.kind === 'node'
     ? graphData.nodes.some(node => node.id === selected.id)
     : graphData.links.some(link => link.id === selected.id);
-  if (!exists) selected = null;
+  if (!exists) clearSelection();
+  else reconcileNodeSelection();
 }
 
 function createSvgElement(name, attributes = {}, text = '') {
@@ -592,7 +634,22 @@ function drawSnapGuides(stage) {
   stage.appendChild(guideGroup);
 }
 
-function getSnappedPosition(draggedNode, proposedX, proposedY) {
+function drawSelectionBox(stage) {
+  if (!view.selectionBox) return;
+  const rectangle = normalizeSelectionRectangle(view.selectionBox.start, view.selectionBox.end);
+  stage.appendChild(createSvgElement('rect', {
+    class: 'selection-box',
+    x: rectangle.x,
+    y: rectangle.y,
+    width: rectangle.width,
+    height: rectangle.height,
+    rx: 4,
+    'vector-effect': 'non-scaling-stroke',
+    'aria-hidden': 'true'
+  }));
+}
+
+function getSnappedPosition(draggedNode, proposedX, proposedY, excludedIds = new Set([draggedNode.id])) {
   if (!view.snapEnabled) {
     return { x: Math.round(proposedX), y: Math.round(proposedY), guides: null };
   }
@@ -601,7 +658,7 @@ function getSnappedPosition(draggedNode, proposedX, proposedY) {
   let bestY = null;
 
   graphData.nodes.forEach(other => {
-    if (other.id === draggedNode.id) return;
+    if (excludedIds.has(other.id)) return;
     const otherSize = nodeDimensions(other);
     const distance = Math.hypot(
       proposedX + draggedSize.width / 2 - (other.x + otherSize.width / 2),
@@ -702,7 +759,7 @@ function drawRelation(pathStage, labelStage, relation, route) {
   if (!route) return;
   const { from, to, endX, endY } = route;
   const active = selected?.kind === 'link' && selected.id === relation.id;
-  const fromSelected = selected?.kind === 'node' && selected.id === relation.from;
+  const fromSelected = selectedNodeIds.has(relation.from);
   const ownershipError = relationHasOwnershipError(getOwnershipSummary(to.id), relation, to);
   const stateClasses = `${active ? ' selected' : ''}${fromSelected ? ' from-selected' : ''}${ownershipError ? ' ownership-error' : ''}`;
   const group = createSvgElement('g', {
@@ -814,7 +871,7 @@ function drawRelationDraft(stage, nodes) {
 
 function drawNode(stage, node) {
   const { width, height } = nodeDimensions(node);
-  const active = selected?.kind === 'node' && selected.id === node.id;
+  const active = selectedNodeIds.has(node.id);
   const connectionTarget = view.linkDraft?.targetId === node.id;
   const ownership = getOwnershipSummary(node.id);
   const ownershipError = ownership.error;
@@ -869,12 +926,12 @@ function drawNode(stage, node) {
   });
   connectionHandle.appendChild(createSvgElement('title', {}, '拖到另一主体，创建持股关系'));
   connectionHandle.addEventListener('pointerdown', event => {
+    if (view.spacePressed || event.altKey) return;
     if (sidebarMode === 'query') return;
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    cancelInlineNodeEdit();
-    cancelInlineRelationEdit();
+    if (!flushInlineEdits()) return;
     selectNode(node.id, false);
     const point = clientToWorld(event.clientX, event.clientY);
     view.linkDraft = { from: node.id, x: point.x, y: point.y, targetId: null };
@@ -893,19 +950,22 @@ function drawNode(stage, node) {
   });
   resizeHandle.appendChild(createSvgElement('title', {}, '拖动主体右下边缘调整大小'));
   resizeHandle.addEventListener('pointerdown', event => {
+    if (view.spacePressed || event.altKey) return;
     if (sidebarMode === 'query' || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    cancelInlineNodeEdit();
-    cancelInlineRelationEdit();
+    if (!flushInlineEdits()) return;
+    const currentNode = nodeMap().get(node.id);
+    if (!currentNode) return;
+    const currentSize = nodeDimensions(currentNode);
     selectNode(node.id, false);
     const point = clientToWorld(event.clientX, event.clientY);
     view.nodeResize = {
       id: node.id,
       startX: point.x,
       startY: point.y,
-      nodeWidth: width,
-      nodeHeight: height,
+      nodeWidth: currentSize.width,
+      nodeHeight: currentSize.height,
       before: deepCopy(graphData),
       moved: false
     };
@@ -919,11 +979,15 @@ function drawNode(stage, node) {
 
   group.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
+    if (view.spacePressed || event.altKey) return;
     event.stopPropagation();
     if (sidebarMode === 'query') {
       event.preventDefault();
       return;
     }
+    if (!flushInlineEdits()) return;
+    const currentNode = nodeMap().get(node.id);
+    if (!currentNode) return;
     const now = Date.now();
     if (lastNodeClick.id === node.id && now - lastNodeClick.time < 460) {
       event.preventDefault();
@@ -933,14 +997,29 @@ function drawNode(stage, node) {
       return;
     }
     lastNodeClick = { id: node.id, time: now };
-    selectNode(node.id, false);
+    if (event.shiftKey) {
+      selectNode(node.id, false, true);
+      if (!selectedNodeIds.has(node.id)) return;
+    }
+    if (!selectedNodeIds.has(node.id)) selectNode(node.id, false);
+    else {
+      selected = { kind: 'node', id: node.id };
+      renderNodeList();
+      renderInspector();
+    }
     const point = clientToWorld(event.clientX, event.clientY);
+    const dragIds = selectedNodeIds.has(node.id) ? [...selectedNodeIds] : [node.id];
     view.nodeDrag = {
       id: node.id,
+      ids: dragIds,
       startX: point.x,
       startY: point.y,
-      nodeX: node.x,
-      nodeY: node.y,
+      nodeX: currentNode.x,
+      nodeY: currentNode.y,
+      positions: new Map(dragIds.map(id => {
+        const item = nodeMap().get(id);
+        return [id, { x: item.x, y: item.y }];
+      })),
       before: deepCopy(graphData),
       moved: false
     };
@@ -953,7 +1032,7 @@ function drawNode(stage, node) {
       return;
     }
     if (sidebarMode === 'query' && event.detail > 1) return;
-    selectNode(node.id, false);
+    if (sidebarMode === 'query') selectNode(node.id, false);
   });
   group.addEventListener('dblclick', event => {
     if (sidebarMode === 'query') {
@@ -980,6 +1059,7 @@ function drawNode(stage, node) {
 }
 
 function renderGraph() {
+  reconcileNodeSelection();
   svg.replaceChildren();
   svg.dataset.mode = sidebarMode;
   svg.setAttribute('viewBox', `0 0 ${VIEW_WIDTH} ${VIEW_HEIGHT}`);
@@ -1002,6 +1082,7 @@ function renderGraph() {
   drawRelationDraft(relationPathStage, nodes);
   graphData.nodes.forEach(node => drawNode(nodeStage, node));
   stage.append(...graphLayerOrder(relationPathStage, nodeStage, relationLabelStage));
+  drawSelectionBox(stage);
   svg.appendChild(stage);
   updateOwnershipQueryHighlight();
   zoomValue.textContent = `${Math.round(view.scale * 100)}%`;
@@ -1020,7 +1101,7 @@ function createNodeListItem(node, treeItem = false) {
   const typePresentation = nodeTypePresentation(node);
   const item = document.createElement('button');
   item.type = 'button';
-  item.className = `node-list-item${treeItem ? ' tree-item' : ''}${selected?.kind === 'node' && selected.id === node.id ? ' active' : ''}${ownership.error ? ' ownership-error' : ''}${ownership.warning ? ' ownership-warning' : ''}`;
+  item.className = `node-list-item${treeItem ? ' tree-item' : ''}${selectedNodeIds.has(node.id) ? ' active' : ''}${ownership.error ? ' ownership-error' : ''}${ownership.warning ? ' ownership-warning' : ''}`;
   item.dataset.nodeId = node.id;
   if (ownership.error || ownership.warning) item.title = presentation.text;
   item.innerHTML = `
@@ -1788,23 +1869,31 @@ function handleOwnershipQueryNodePick(id) {
   if (ownershipQueryPickRole === 'target') showToast('已选择权益起点，请点击目标公司');
 }
 
-function selectNode(id, fullRender = true) {
+function selectNode(id, fullRender = true, additive = false) {
   if (sidebarMode === 'query') {
     handleOwnershipQueryNodePick(id);
     return;
   }
-  selected = { kind: 'node', id };
+  if (additive) {
+    const nextIds = new Set(selectedNodeIds);
+    if (nextIds.has(id)) nextIds.delete(id);
+    else nextIds.add(id);
+    setSelectedNodes(nextIds, nextIds.has(id) ? id : null);
+  } else {
+    setSelectedNodes([id], id);
+  }
   if (fullRender) renderAll();
   else {
     svg.querySelectorAll('.graph-node').forEach(element => {
-      element.classList.toggle('selected', element.dataset.nodeId === id);
+      element.classList.toggle('selected', selectedNodeIds.has(element.dataset.nodeId));
     });
     svg.querySelectorAll('.graph-relation, .relation-label-group').forEach(element => element.classList.remove('selected'));
     svg.querySelectorAll('.graph-relation, .relation-label-group').forEach(element => {
-      element.classList.toggle('from-selected', element.dataset.fromId === id);
+      element.classList.toggle('from-selected', selectedNodeIds.has(element.dataset.fromId));
     });
     renderNodeList();
     renderInspector();
+    updateHistoryButtons();
   }
 }
 
@@ -1814,6 +1903,7 @@ function selectRelation(id) {
     return;
   }
   selected = { kind: 'link', id };
+  selectedNodeIds = new Set();
   renderAll();
 }
 
@@ -1827,6 +1917,18 @@ function copySelection() {
     return;
   }
   if (selected.kind === 'node') {
+    if (selectedNodeIds.size > 1) {
+      const ids = new Set(selectedNodeIds);
+      clipboardBuffer = {
+        kind: 'node-group',
+        nodes: deepCopy(graphData.nodes.filter(node => ids.has(node.id))),
+        links: deepCopy(graphData.links.filter(link => ids.has(link.from) && ids.has(link.to))),
+        pasteCount: 0
+      };
+      showToast(`已复制 ${ids.size} 个主体及其内部关系`);
+      updateHistoryButtons();
+      return;
+    }
     const node = nodeMap().get(selected.id);
     if (!node) return;
     clipboardBuffer = { kind: 'node', data: deepCopy(node) };
@@ -1844,6 +1946,46 @@ function pasteSelection() {
   if (!canEditGraph()) return;
   if (!clipboardBuffer) {
     showToast('剪贴板为空，请先复制主体或持股关系', 'warning');
+    return;
+  }
+  if (clipboardBuffer.kind === 'node-group') {
+    const copiedNodes = clipboardBuffer.nodes || [];
+    if (!copiedNodes.length) return;
+    clipboardBuffer.pasteCount = Number(clipboardBuffer.pasteCount || 0) + 1;
+    const offset = 40 * clipboardBuffer.pasteCount;
+    const idMap = new Map(copiedNodes.map(node => [node.id, generateId('node')]));
+    const usedNodes = [...graphData.nodes];
+    const newNodes = copiedNodes.map(source => {
+      const id = idMap.get(source.id);
+      const name = suggestUniqueNodeName(usedNodes, String(source.name || '新主体').replace(/\n/g, ' ').trim());
+      const node = {
+        ...deepCopy(source),
+        id,
+        name,
+        code: '',
+        root: false,
+        x: Math.max(20, Number(source.x || 100) + offset),
+        y: Math.max(20, Number(source.y || 100) + offset)
+      };
+      usedNodes.push(node);
+      return node;
+    });
+    const newLinks = (clipboardBuffer.links || []).map(source => {
+      const link = {
+        ...deepCopy(source),
+        id: generateId('relation'),
+        from: idMap.get(source.from),
+        to: idMap.get(source.to)
+      };
+      ['routeOrder', 'sourcePort', 'targetPort', 'laneSlot', 'labelTier', 'corridorSlot']
+        .forEach(key => delete link[key]);
+      return link;
+    });
+    commit(`已粘贴 ${newNodes.length} 个主体`, () => {
+      graphData.nodes.push(...newNodes);
+      graphData.links.push(...newLinks);
+      setSelectedNodes(newNodes.map(node => node.id), newNodes.at(-1)?.id);
+    });
     return;
   }
   if (clipboardBuffer.kind === 'node') {
@@ -1944,25 +2086,29 @@ function addConnectedNode(direction) {
 function deleteSelectedNode() {
   if (!canEditGraph()) return;
   if (selected?.kind !== 'node') return;
+  const ids = selectedNodeIds.size ? new Set(selectedNodeIds) : new Set([selected.id]);
   const node = nodeMap().get(selected.id);
-  if (!node || !confirm(`确定删除“${node.name.replace(/\n/g, ' ')}”及其所有相关关系吗？`)) return;
-  const id = node.id;
-  if (ownershipQuerySourceId === id) {
+  if (!node) return;
+  const prompt = ids.size > 1
+    ? `确定删除选中的 ${ids.size} 个主体及其所有相关关系吗？`
+    : `确定删除“${node.name.replace(/\n/g, ' ')}”及其所有相关关系吗？`;
+  if (!confirm(prompt)) return;
+  if (ownershipQuerySourceId && ids.has(ownershipQuerySourceId)) {
     ownershipQuerySourceId = null;
     ownershipQueryTargetId = null;
     ownershipQueryPickRole = 'source';
     currentOwnershipQuery = null;
     ownershipQueryFocusedPath = null;
-  } else if (ownershipQueryTargetId === id) {
+  } else if (ownershipQueryTargetId && ids.has(ownershipQueryTargetId)) {
     ownershipQueryTargetId = null;
     ownershipQueryPickRole = 'target';
     currentOwnershipQuery = null;
     ownershipQueryFocusedPath = null;
   }
-  commit('主体已删除', () => {
-    graphData.nodes = graphData.nodes.filter(item => item.id !== id);
-    graphData.links = graphData.links.filter(link => link.from !== id && link.to !== id);
-    selected = null;
+  commit(ids.size > 1 ? `已删除 ${ids.size} 个主体` : '主体已删除', () => {
+    graphData.nodes = graphData.nodes.filter(item => !ids.has(item.id));
+    graphData.links = graphData.links.filter(link => !ids.has(link.from) && !ids.has(link.to));
+    clearSelection();
   });
 }
 
@@ -2237,7 +2383,7 @@ function setSidebarMode(mode) {
   sidebarMode = nextMode;
   const queryMode = sidebarMode === 'query';
   if (queryMode) {
-    selected = null;
+    clearSelection();
     financingOpenNodeId = null;
     currentFinancingPlan = null;
   }
@@ -2247,7 +2393,7 @@ function setSidebarMode(mode) {
   document.getElementById('sidebar-mode-title').textContent = queryMode ? '权益查询' : '主体清单';
   document.getElementById('canvas-hint').textContent = queryMode
     ? '权益查询：依次点击两个主体 · 再点第三个主体开始新查询'
-    : '拖动主体右下边缘调整大小 · 拖动底部圆点建立关系 · 双击节点改名 · 点击比例修改';
+    : '空白处拖动框选 · Shift 追加选择 · 拖动任一选中主体整体移动 · Space/Alt 拖动画布';
   document.getElementById('sidebar-subjects').setAttribute('aria-selected', String(!queryMode));
   document.getElementById('sidebar-ownership-query').setAttribute('aria-selected', String(queryMode));
   if (queryMode && !ownershipQuerySourceId && !ownershipQueryTargetId) ownershipQueryPickRole = 'source';
@@ -2363,7 +2509,7 @@ document.getElementById('delete-link').addEventListener('click', () => {
   const id = selected.id;
   commit('持股关系已删除', () => {
     graphData.links = graphData.links.filter(link => link.id !== id);
-    selected = null;
+    clearSelection();
   });
 });
 document.getElementById('add-shareholder').addEventListener('click', () => addConnectedNode('upstream'));
@@ -2430,7 +2576,7 @@ document.getElementById('new-document').addEventListener('click', () => {
       nodes: [], links: [], financingEvents: [],
       settings: { watermarkText: DEFAULT_WATERMARK_TEXT }
     };
-    selected = null;
+    clearSelection();
     ownershipQuerySourceId = null;
     ownershipQueryTargetId = null;
     ownershipQueryPickRole = 'source';
@@ -2449,7 +2595,7 @@ importFile.addEventListener('change', async event => {
     if (!watermarkEditor.hidden) cancelWatermarkEditor();
     commit('JSON 数据已导入', () => {
       graphData = imported;
-      selected = null;
+      clearSelection();
       ownershipQuerySourceId = null;
       ownershipQueryTargetId = null;
       ownershipQueryPickRole = 'source';
@@ -2465,19 +2611,42 @@ importFile.addEventListener('change', async event => {
 });
 
 svg.addEventListener('pointerdown', event => {
-  if (event.button !== 0 || isGraphInteractionTarget(event.target)) return;
-  selected = null;
-  renderNodeList();
-  renderInspector();
-  const point = clientToSvg(event.clientX, event.clientY);
-  view.panning = {
-    pointerX: point.x,
-    pointerY: point.y,
-    x: view.x,
-    y: view.y
-  };
+  if (![0, 1].includes(event.button)) return;
+  const shouldPan = event.pointerType === 'touch'
+    || event.button === 1
+    || event.altKey
+    || view.spacePressed
+    || sidebarMode === 'query';
+  if (!shouldPan && isGraphInteractionTarget(event.target)) return;
+  event.preventDefault();
+  if (!flushInlineEdits()) return;
+  if (shouldPan) {
+    view.justPanned = false;
+    const point = clientToSvg(event.clientX, event.clientY);
+    view.panning = {
+      pointerX: point.x,
+      pointerY: point.y,
+      x: view.x,
+      y: view.y,
+      moved: false
+    };
+    canvasWrap.classList.add('dragging');
+  } else {
+    const point = clientToWorld(event.clientX, event.clientY);
+    const baseIds = event.shiftKey ? new Set(selectedNodeIds) : new Set();
+    if (!event.shiftKey) clearSelection();
+    view.selectionBox = {
+      start: point,
+      end: point,
+      baseIds,
+      additive: event.shiftKey
+    };
+    canvasWrap.classList.add('selecting');
+    renderGraph();
+    renderNodeList();
+    renderInspector();
+  }
   svg.setPointerCapture(event.pointerId);
-  canvasWrap.classList.add('dragging');
 });
 
 svg.addEventListener('pointermove', event => {
@@ -2497,9 +2666,22 @@ svg.addEventListener('pointermove', event => {
     const dx = point.x - view.nodeDrag.startX;
     const dy = point.y - view.nodeDrag.startY;
     if (Math.abs(dx) + Math.abs(dy) > 2) view.nodeDrag.moved = true;
-    const snapped = getSnappedPosition(node, view.nodeDrag.nodeX + dx, view.nodeDrag.nodeY + dy);
-    node.x = snapped.x;
-    node.y = snapped.y;
+    const excludedIds = new Set(view.nodeDrag.ids);
+    const snapped = getSnappedPosition(
+      node,
+      view.nodeDrag.nodeX + dx,
+      view.nodeDrag.nodeY + dy,
+      excludedIds
+    );
+    const moveX = snapped.x - view.nodeDrag.nodeX;
+    const moveY = snapped.y - view.nodeDrag.nodeY;
+    const nodes = nodeMap();
+    view.nodeDrag.positions.forEach((position, id) => {
+      const draggedNode = nodes.get(id);
+      if (!draggedNode) return;
+      draggedNode.x = Math.round(position.x + moveX);
+      draggedNode.y = Math.round(position.y + moveY);
+    });
     view.snapGuides = snapped.guides;
     renderGraph();
     return;
@@ -2521,8 +2703,21 @@ svg.addEventListener('pointermove', event => {
     renderGraph();
     return;
   }
+  if (view.selectionBox) {
+    view.selectionBox.end = clientToWorld(event.clientX, event.clientY);
+    const rectangle = normalizeSelectionRectangle(view.selectionBox.start, view.selectionBox.end);
+    const candidates = graphData.nodes.map(node => ({ ...node, ...nodeDimensions(node) }));
+    const intersectingIds = nodeIdsInSelectionRectangle(candidates, rectangle);
+    const nextIds = new Set([...view.selectionBox.baseIds, ...intersectingIds]);
+    setSelectedNodes(nextIds, intersectingIds.at(-1) || [...nextIds].at(-1));
+    renderGraph();
+    return;
+  }
   if (!view.panning) return;
   const point = clientToSvg(event.clientX, event.clientY);
+  if (Math.abs(point.x - view.panning.pointerX) + Math.abs(point.y - view.panning.pointerY) > 2) {
+    view.panning.moved = true;
+  }
   view.x = view.panning.x + point.x - view.panning.pointerX;
   view.y = view.panning.y + point.y - view.panning.pointerY;
   renderGraph();
@@ -2570,7 +2765,7 @@ svg.addEventListener('pointerup', event => {
       saveData();
       updateHistoryButtons();
       renderAll();
-      showToast('节点位置已保存');
+      showToast(drag.ids.length > 1 ? `已移动 ${drag.ids.length} 个主体` : '节点位置已保存');
     } else {
       renderGraph();
     }
@@ -2589,9 +2784,26 @@ svg.addEventListener('pointerup', event => {
       renderGraph();
     }
   }
+  if (view.selectionBox) {
+    const rectangle = normalizeSelectionRectangle(view.selectionBox.start, view.selectionBox.end);
+    const wasDrag = rectangle.width + rectangle.height > 4;
+    view.selectionBox = null;
+    canvasWrap.classList.remove('selecting');
+    if (!wasDrag && !event.shiftKey) clearSelection();
+    renderAll();
+    if (wasDrag && selectedNodeIds.size > 1) showToast(`已选择 ${selectedNodeIds.size} 个主体`);
+  }
+  if (view.panning?.moved) view.justPanned = true;
   view.panning = null;
   canvasWrap.classList.remove('dragging');
 });
+
+svg.addEventListener('click', event => {
+  if (!view.justPanned) return;
+  event.preventDefault();
+  event.stopPropagation();
+  view.justPanned = false;
+}, true);
 
 svg.addEventListener('pointercancel', () => {
   if (view.linkDraft) {
@@ -2599,10 +2811,27 @@ svg.addEventListener('pointercancel', () => {
     renderGraph();
     return;
   }
-  if (view.nodeResize) {
-    view.nodeResize = null;
-    renderGraph();
+  if (view.nodeDrag) {
+    graphData = normalizeData(view.nodeDrag.before);
+    view.nodeDrag = null;
+    view.snapGuides = null;
+    renderAll();
+    return;
   }
+  if (view.nodeResize) {
+    graphData = normalizeData(view.nodeResize.before);
+    view.nodeResize = null;
+    renderAll();
+    return;
+  }
+  if (view.selectionBox) {
+    setSelectedNodes(view.selectionBox.baseIds);
+    view.selectionBox = null;
+    canvasWrap.classList.remove('selecting');
+    renderAll();
+  }
+  view.panning = null;
+  canvasWrap.classList.remove('dragging');
 });
 
 svg.addEventListener('wheel', event => {
@@ -2613,6 +2842,13 @@ svg.addEventListener('wheel', event => {
 
 document.addEventListener('keydown', event => {
   const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+  const focusedGraphItem = document.activeElement?.closest?.('.graph-node, .graph-relation, .relation-label-group');
+  if (!editing && !focusedGraphItem && event.code === 'Space') {
+    event.preventDefault();
+    view.spacePressed = true;
+    canvasWrap.classList.add('pan-ready');
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault();
     event.shiftKey ? redo() : undo();
@@ -2647,6 +2883,17 @@ document.addEventListener('keydown', event => {
   if (!editing && (event.key === 'Delete' || event.key === 'Backspace') && selected?.kind === 'node') {
     deleteSelectedNode();
   }
+});
+
+document.addEventListener('keyup', event => {
+  if (event.code !== 'Space') return;
+  view.spacePressed = false;
+  canvasWrap.classList.remove('pan-ready');
+});
+
+window.addEventListener('blur', () => {
+  view.spacePressed = false;
+  canvasWrap.classList.remove('pan-ready');
 });
 
 window.addEventListener('resize', () => renderGraph());
