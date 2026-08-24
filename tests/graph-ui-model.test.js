@@ -61,6 +61,16 @@ function horizontalSegments(route) {
   return route.segments.filter(segment => segment.y1 === segment.y2 && segment.x1 !== segment.x2);
 }
 
+function routeSegmentsCross(left, right) {
+  const horizontal = left.orientation === 'horizontal' ? left : right;
+  const vertical = left.orientation === 'vertical' ? left : right;
+  if (horizontal.orientation !== 'horizontal' || vertical.orientation !== 'vertical') return false;
+  return vertical.x1 > Math.min(horizontal.x1, horizontal.x2)
+    && vertical.x1 < Math.max(horizontal.x1, horizontal.x2)
+    && horizontal.y1 > Math.min(vertical.y1, vertical.y2)
+    && horizontal.y1 < Math.max(vertical.y1, vertical.y2);
+}
+
 function horizontalSegmentsOverlap(left, right) {
   if (left.y1 !== right.y1) return false;
   const leftStart = Math.min(left.x1, left.x2);
@@ -537,6 +547,59 @@ test('relation routing assigns target ports monotonically by source x position',
       `target port ${endX} should lie inside the fund top edge`
     );
   });
+});
+
+test('relation routing nests long common-target routes without crossing inner source stems', () => {
+  const nodes = [
+    { id: 'gp', x: 0, y: 0, width: 220, height: 100 },
+    { id: 'new-shareholder', x: 300, y: 0, width: 220, height: 100 },
+    { id: 'right-shareholder', x: 700, y: 0, width: 220, height: 100 },
+    { id: 'fund', x: 360, y: 340, width: 400, height: 100 }
+  ];
+  const links = [
+    { id: 'gp-fund', from: 'gp', to: 'fund', percent: '51%' },
+    { id: 'new-fund', from: 'new-shareholder', to: 'fund', percent: '29%' },
+    { id: 'right-fund', from: 'right-shareholder', to: 'fund', percent: '20%' }
+  ];
+  const verify = scenarioNodes => {
+    const result = calculateEquityRelationRoutes(scenarioNodes, links);
+    const routes = links.map(link => relationRoute(result, link.id));
+    const crossings = [];
+
+    for (let leftIndex = 0; leftIndex < routes.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < routes.length; rightIndex += 1) {
+        routes[leftIndex].segments.forEach(leftSegment => {
+          routes[rightIndex].segments.forEach(rightSegment => {
+            if (routeSegmentsCross(leftSegment, rightSegment)) {
+              crossings.push([links[leftIndex].id, links[rightIndex].id]);
+            }
+          });
+        });
+      }
+    }
+
+    assert.deepEqual(crossings, [], 'a longer outer route should not cut across a shorter inner route');
+    return result;
+  };
+  const result = verify(nodes);
+  const mirrored = nodes.map(node => ({ ...node, x: 920 - node.x - node.width }));
+  verify(mirrored);
+  const shuffled = calculateEquityRelationRoutes(
+    [nodes[3], nodes[1], nodes[0], nodes[2]],
+    [links[2], links[0], links[1]]
+  );
+
+  links.forEach(link => {
+    assert.equal(
+      relationRoute(shuffled, link.id).pathData,
+      relationRoute(result, link.id).pathData,
+      'route output should not depend on node or relation input order'
+    );
+  });
+  assert.ok(
+    relationRoute(result, 'gp-fund').laneIndex > relationRoute(result, 'new-fund').laneIndex,
+    'the wider GP route should wrap below the shorter new-shareholder route'
+  );
 });
 
 test('relation routing detours long cross-layer edges around intermediate node rectangles', () => {

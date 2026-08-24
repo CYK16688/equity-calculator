@@ -501,6 +501,132 @@ function routeSegments(points) {
   });
 }
 
+function routeHorizontalInterval(route) {
+  return {
+    left: Math.min(route.startX, route.endX),
+    right: Math.max(route.startX, route.endX)
+  };
+}
+
+function routeIntervalsConflict(left, right) {
+  return !(left.right + 18 <= right.left || left.left >= right.right + 18);
+}
+
+function assignRouteLanes(orderedRoutes) {
+  const occupiedByLane = [];
+  orderedRoutes.forEach(route => {
+    const interval = routeHorizontalInterval(route);
+    let lane = 0;
+    while (occupiedByLane[lane]?.some(existing => routeIntervalsConflict(interval, existing))) lane += 1;
+    if (!occupiedByLane[lane]) occupiedByLane[lane] = [];
+    occupiedByLane[lane].push(interval);
+    route.laneIndex = lane;
+  });
+}
+
+function pointInsideRouteInterval(route, x) {
+  const interval = routeHorizontalInterval(route);
+  return x > interval.left && x < interval.right;
+}
+
+function routeLaneScore(routes, forward) {
+  let crossings = 0;
+  routes.forEach(horizontalRoute => {
+    routes.forEach(verticalRoute => {
+      if (horizontalRoute === verticalRoute) return;
+      if (horizontalRoute.laneIndex < verticalRoute.laneIndex
+        && pointInsideRouteInterval(horizontalRoute, verticalRoute.startX)) crossings += 1;
+      if (forward && horizontalRoute.laneIndex > verticalRoute.laneIndex
+        && pointInsideRouteInterval(horizontalRoute, verticalRoute.endX)) crossings += 1;
+      if (!forward && horizontalRoute.laneIndex < verticalRoute.laneIndex
+        && pointInsideRouteInterval(horizontalRoute, verticalRoute.endX)) crossings += 1;
+    });
+  });
+  const maxLane = Math.max(0, ...routes.map(route => route.laneIndex));
+  const totalLaneDepth = routes.reduce((total, route) => total + route.laneIndex, 0);
+  return [crossings, maxLane, totalLaneDepth];
+}
+
+function compareRouteLaneScores(left, right) {
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return 0;
+}
+
+function optimizeBandRouteLanes(bandRoutes, forward) {
+  if (bandRoutes.length <= 1) {
+    bandRoutes.forEach(route => { route.laneIndex = 0; });
+    return;
+  }
+  let best = null;
+  const evaluate = order => {
+    assignRouteLanes(order);
+    const score = routeLaneScore(bandRoutes, forward);
+    const signature = order.map(route => route.relation.id).join('\u0000');
+    if (!best || compareRouteLaneScores(score, best.score) < 0
+      || (compareRouteLaneScores(score, best.score) === 0 && signature < best.signature)) {
+      best = {
+        score,
+        signature,
+        lanes: new Map(bandRoutes.map(route => [route.relation.id, route.laneIndex]))
+      };
+    }
+    return score;
+  };
+  const stable = [...bandRoutes].sort((left, right) => left.relation.id.localeCompare(right.relation.id));
+
+  if (stable.length <= 7) {
+    const visit = (prefix, remaining) => {
+      if (!remaining.length) {
+        evaluate(prefix);
+        return;
+      }
+      remaining.forEach((route, index) => visit(
+        [...prefix, route],
+        [...remaining.slice(0, index), ...remaining.slice(index + 1)]
+      ));
+    };
+    visit([], stable);
+  } else {
+    const span = route => Math.abs(route.startX - route.endX);
+    const candidateOrders = [
+      stable,
+      [...stable].sort((left, right) => left.startX - right.startX || left.endX - right.endX),
+      [...stable].sort((left, right) => right.startX - left.startX || right.endX - left.endX),
+      [...stable].sort((left, right) => left.endX - right.endX || left.startX - right.startX),
+      [...stable].sort((left, right) => right.endX - left.endX || right.startX - left.startX),
+      [...stable].sort((left, right) => span(left) - span(right) || left.startX - right.startX),
+      [...stable].sort((left, right) => span(right) - span(left) || left.startX - right.startX)
+    ];
+    const seen = new Set();
+    candidateOrders.forEach(candidate => {
+      const key = candidate.map(route => route.relation.id).join('\u0000');
+      if (seen.has(key)) return;
+      seen.add(key);
+      const order = [...candidate];
+      let currentScore = evaluate(order);
+      if (order.length > 40) return;
+      for (let pass = 0; pass < 6; pass += 1) {
+        let improved = false;
+        for (let index = 0; index < order.length - 1; index += 1) {
+          [order[index], order[index + 1]] = [order[index + 1], order[index]];
+          const candidateScore = evaluate(order);
+          if (compareRouteLaneScores(candidateScore, currentScore) < 0) {
+            currentScore = candidateScore;
+            improved = true;
+          } else {
+            [order[index], order[index + 1]] = [order[index + 1], order[index]];
+          }
+        }
+        if (!improved) break;
+      }
+    });
+  }
+
+  bandRoutes.forEach(route => { route.laneIndex = best.lanes.get(route.relation.id); });
+}
+
 /**
  * Orthogonal edge router shared by automatic and manually adjusted layouts.
  * Routes are grouped by semantic hierarchy levels, not rounded y coordinates,
@@ -589,25 +715,12 @@ export function calculateEquityRelationRoutes(nodes, links, options = {}) {
     const targetTop = Math.min(...bandRoutes.map(route => route.endY));
     const forward = targetLevel > sourceLevel && targetTop > sourceBottom;
     const availableGap = Math.max(48, targetTop - sourceBottom);
-    const orderedRoutes = [...bandRoutes].sort((left, right) =>
-      left.startX - right.startX || left.endX - right.endX || left.relation.id.localeCompare(right.relation.id)
-    );
-    const occupiedByLane = [];
-    orderedRoutes.forEach(route => {
-      const interval = { left: Math.min(route.startX, route.endX), right: Math.max(route.startX, route.endX) };
-      let lane = 0;
-      while (occupiedByLane[lane]?.some(existing => !(
-        interval.right + 18 <= existing.left || interval.left >= existing.right + 18
-      ))) lane += 1;
-      if (!occupiedByLane[lane]) occupiedByLane[lane] = [];
-      occupiedByLane[lane].push(interval);
-      route.laneIndex = lane;
-    });
-    const maxLane = Math.max(0, ...orderedRoutes.map(route => route.laneIndex));
+    optimizeBandRouteLanes(bandRoutes, forward);
+    const maxLane = Math.max(0, ...bandRoutes.map(route => route.laneIndex));
     const spacing = maxLane > 0
       ? Math.max(12, Math.min(laneGap, (availableGap - 64) / maxLane))
       : 0;
-    orderedRoutes.forEach(route => {
+    bandRoutes.forEach(route => {
       route.midY = forward
         ? sourceBottom + 32 + route.laneIndex * spacing
         : Math.max(route.startY, route.endY) + 32 + route.laneIndex * laneGap;
