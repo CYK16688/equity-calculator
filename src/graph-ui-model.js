@@ -410,17 +410,26 @@ export function calculateEquityAutoLayout(nodes, links, options = {}) {
     });
   });
 
-  const alignLevel = (level, neighbours) => {
+  const alignLevel = level => {
     const layer = groups.get(level);
     const desired = new Map(layer.map(nodeId => {
-      const neighbourCenters = neighbours.get(nodeId).filter(centers.has.bind(centers)).map(id => centers.get(id));
-      return [nodeId, median(neighbourCenters) ?? centers.get(nodeId)];
+      const parentCenters = incoming.get(nodeId).filter(centers.has.bind(centers)).map(id => centers.get(id));
+      const investeeCenters = outgoing.get(nodeId).filter(centers.has.bind(centers)).map(id => centers.get(id));
+      const parentCenter = median(parentCenters);
+      const investeeCenter = median(investeeCenters);
+      if (parentCenter !== null && investeeCenter !== null) {
+        // A holding platform belongs visually between its owners and investees.
+        // Equal weighting shortens both sides instead of snapping to whichever
+        // directional sweep happened to run last.
+        return [nodeId, (parentCenter + investeeCenter) / 2];
+      }
+      return [nodeId, parentCenter ?? investeeCenter ?? centers.get(nodeId)];
     }));
     packOrderedCenters(layer, desired, sizes, nodeGap).forEach((value, nodeId) => centers.set(nodeId, value));
   };
-  for (let iteration = 0; iteration < 8; iteration += 1) {
-    [...levelNumbers].reverse().slice(1).forEach(level => alignLevel(level, outgoing));
-    levelNumbers.slice(1).forEach(level => alignLevel(level, incoming));
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    [...levelNumbers].reverse().forEach(alignLevel);
+    levelNumbers.forEach(alignLevel);
   }
 
   const left = Math.min(...nodeIds.map(nodeId => centers.get(nodeId) - sizes.get(nodeId).width / 2));
@@ -450,6 +459,212 @@ export function calculateEquityAutoLayout(nodes, links, options = {}) {
     });
   });
   return { positions, levels, unresolved, score: bestScore };
+}
+
+function pathFromSegments(segments) {
+  if (!segments.length) return '';
+  return segments.reduce((path, segment, index) => {
+    if (index === 0) return `M ${segment.x1} ${segment.y1} L ${segment.x2} ${segment.y2}`;
+    return `${path} L ${segment.x2} ${segment.y2}`;
+  }, '');
+}
+
+function routeSegments(points) {
+  const compact = points.filter((point, index) => index === 0
+    || point.x !== points[index - 1].x
+    || point.y !== points[index - 1].y);
+  return compact.slice(1).map((point, index) => {
+    const previous = compact[index];
+    return {
+      x1: previous.x,
+      y1: previous.y,
+      x2: point.x,
+      y2: point.y,
+      orientation: previous.x === point.x ? 'vertical' : 'horizontal'
+    };
+  });
+}
+
+/**
+ * Orthogonal edge router shared by automatic and manually adjusted layouts.
+ * Routes are grouped by semantic hierarchy levels, not rounded y coordinates,
+ * so different node heights cannot accidentally reuse the same track.
+ */
+export function calculateEquityRelationRoutes(nodes, links, options = {}) {
+  const normalizedNodes = (Array.isArray(nodes) ? nodes : [])
+    .filter(node => String(node?.id || ''))
+    .map(node => ({
+      ...node,
+      id: String(node.id),
+      x: Number(node.x) || 0,
+      y: Number(node.y) || 0,
+      width: Math.max(80, Number(node.layoutWidth ?? node.width) || (node.root ? 330 : 220)),
+      height: Math.max(60, Number(node.layoutHeight ?? node.height) || (node.root ? 76 : 88))
+    }));
+  const nodeById = new Map(normalizedNodes.map(node => [node.id, node]));
+  const normalizedLinks = (Array.isArray(links) ? links : [])
+    .map((link, index) => ({
+      ...link,
+      id: String(link?.id || `route-${index}`),
+      from: String(link?.from || ''),
+      to: String(link?.to || '')
+    }))
+    .filter(link => nodeById.has(link.from) && nodeById.has(link.to));
+  const { levels } = calculateEquityHierarchyLevels(normalizedNodes, normalizedLinks);
+  const laneGap = Math.max(14, Number(options.routeGap ?? options.laneGap) || 30);
+  const obstacleGap = Math.max(10, Number(options.nodeClearance ?? options.obstacleGap) || 18);
+  const incoming = new Map(normalizedNodes.map(node => [node.id, []]));
+  const outgoing = new Map(normalizedNodes.map(node => [node.id, []]));
+  normalizedLinks.forEach(link => {
+    incoming.get(link.to).push(link);
+    outgoing.get(link.from).push(link);
+  });
+  const nodeCenterX = node => node.x + node.width / 2;
+  incoming.forEach(relations => relations.sort((left, right) =>
+    nodeCenterX(nodeById.get(left.from)) - nodeCenterX(nodeById.get(right.from))
+    || left.id.localeCompare(right.id)
+  ));
+  outgoing.forEach(relations => relations.sort((left, right) =>
+    nodeCenterX(nodeById.get(left.to)) - nodeCenterX(nodeById.get(right.to))
+    || left.id.localeCompare(right.id)
+  ));
+
+  const routes = new Map();
+  const bands = new Map();
+  normalizedLinks.forEach(link => {
+    const from = nodeById.get(link.from);
+    const to = nodeById.get(link.to);
+    const outgoingRelations = outgoing.get(link.from);
+    const incomingRelations = incoming.get(link.to);
+    const outgoingIndex = outgoingRelations.findIndex(candidate => candidate.id === link.id);
+    const incomingIndex = incomingRelations.findIndex(candidate => candidate.id === link.id);
+    const startX = outgoingRelations.length <= 1
+      ? nodeCenterX(from)
+      : from.x + from.width * ((outgoingIndex + 1) / (outgoingRelations.length + 1));
+    const endX = incomingRelations.length <= 1
+      ? nodeCenterX(to)
+      : to.x + to.width * ((incomingIndex + 1) / (incomingRelations.length + 1));
+    const startY = from.y + from.height;
+    const endY = to.y;
+    const sourceLevel = levels.get(link.from) || 0;
+    const targetLevel = levels.get(link.to) || 0;
+    const bandKey = `${sourceLevel}:${targetLevel}`;
+    const route = {
+      relation: link,
+      from,
+      to,
+      startX,
+      startY,
+      endX,
+      endY,
+      sourceLevel,
+      targetLevel,
+      bandKey
+    };
+    routes.set(link.id, route);
+    if (!bands.has(bandKey)) bands.set(bandKey, []);
+    bands.get(bandKey).push(route);
+  });
+
+  bands.forEach(bandRoutes => {
+    const sourceLevel = bandRoutes[0].sourceLevel;
+    const targetLevel = bandRoutes[0].targetLevel;
+    const sourceBottom = Math.max(...bandRoutes.map(route => route.startY));
+    const targetTop = Math.min(...bandRoutes.map(route => route.endY));
+    const forward = targetLevel > sourceLevel && targetTop > sourceBottom;
+    const availableGap = Math.max(48, targetTop - sourceBottom);
+    const orderedRoutes = [...bandRoutes].sort((left, right) =>
+      left.startX - right.startX || left.endX - right.endX || left.relation.id.localeCompare(right.relation.id)
+    );
+    const occupiedByLane = [];
+    orderedRoutes.forEach(route => {
+      const interval = { left: Math.min(route.startX, route.endX), right: Math.max(route.startX, route.endX) };
+      let lane = 0;
+      while (occupiedByLane[lane]?.some(existing => !(
+        interval.right + 18 <= existing.left || interval.left >= existing.right + 18
+      ))) lane += 1;
+      if (!occupiedByLane[lane]) occupiedByLane[lane] = [];
+      occupiedByLane[lane].push(interval);
+      route.laneIndex = lane;
+    });
+    const maxLane = Math.max(0, ...orderedRoutes.map(route => route.laneIndex));
+    const spacing = maxLane > 0
+      ? Math.max(12, Math.min(laneGap, (availableGap - 64) / maxLane))
+      : 0;
+    orderedRoutes.forEach(route => {
+      route.midY = forward
+        ? sourceBottom + 32 + route.laneIndex * spacing
+        : Math.max(route.startY, route.endY) + 32 + route.laneIndex * laneGap;
+    });
+  });
+
+  routes.forEach(route => {
+    route.obstacles = normalizedNodes.filter(node =>
+      node.id !== route.relation.from
+      && node.id !== route.relation.to
+      && node.y > route.startY + obstacleGap
+      && node.y + node.height < route.endY - obstacleGap
+    ).map(node => ({
+      left: node.x - obstacleGap,
+      right: node.x + node.width + obstacleGap,
+      top: node.y - obstacleGap,
+      bottom: node.y + node.height + obstacleGap
+    }));
+  });
+  const longRoutes = [...routes.values()]
+    .filter(route => route.obstacles.length > 0)
+    .sort((left, right) => left.startX - right.startX || left.endX - right.endX);
+  const usedCorridors = [];
+  longRoutes.forEach(route => {
+    const obstacles = route.obstacles;
+    const candidates = [route.startX, route.endX, (route.startX + route.endX) / 2];
+    obstacles.forEach(box => candidates.push(box.left - obstacleGap, box.right + obstacleGap));
+    usedCorridors.forEach(x => candidates.push(x - laneGap, x + laneGap));
+    const clearCandidates = candidates.filter(x =>
+      obstacles.every(box => x <= box.left || x >= box.right)
+      && usedCorridors.every(existing => Math.abs(existing - x) >= laneGap)
+    );
+    route.corridorX = (clearCandidates.length ? clearCandidates : candidates)
+      .sort((left, right) => {
+        const leftCost = Math.abs(left - route.startX) + Math.abs(left - route.endX);
+        const rightCost = Math.abs(right - route.startX) + Math.abs(right - route.endX);
+        return leftCost - rightCost || left - right;
+      })[0];
+    usedCorridors.push(route.corridorX);
+  });
+
+  routes.forEach(route => {
+    const isLong = route.obstacles.length > 0;
+    const defaultTargetLaneY = Math.max(route.midY + 24, route.endY - 42 - route.laneIndex * 14);
+    const lastObstacleBottom = isLong
+      ? Math.max(...route.obstacles.map(obstacle => obstacle.bottom))
+      : -Infinity;
+    const remainingTargetGap = route.endY - lastObstacleBottom;
+    const safeTargetLaneY = isLong
+      ? lastObstacleBottom + Math.max(2, Math.min(obstacleGap, remainingTargetGap / 2))
+      : defaultTargetLaneY;
+    const targetLaneY = Math.min(route.endY - 2, Math.max(defaultTargetLaneY, safeTargetLaneY));
+    const points = isLong
+      ? [
+          { x: route.startX, y: route.startY },
+          { x: route.startX, y: route.midY },
+          { x: route.corridorX, y: route.midY },
+          { x: route.corridorX, y: targetLaneY },
+          { x: route.endX, y: targetLaneY },
+          { x: route.endX, y: route.endY }
+        ]
+      : [
+          { x: route.startX, y: route.startY },
+          { x: route.startX, y: route.midY },
+          { x: route.endX, y: route.midY },
+          { x: route.endX, y: route.endY }
+        ];
+    route.segments = routeSegments(points);
+    route.pathData = pathFromSegments(route.segments);
+    route.labelAnchor = { x: route.endX, y: route.endY - 25 };
+  });
+
+  return { routes, levels };
 }
 
 export function buildOwnershipTree(nodes, links, matchedIds = null) {

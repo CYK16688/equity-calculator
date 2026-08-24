@@ -14,6 +14,7 @@ import { calculateOwnershipQuery } from './ownership-query.js';
 import {
   calculateEquityAutoLayout,
   calculateEquityHierarchyLevels,
+  calculateEquityRelationRoutes,
   graphLayerOrder,
   nodeCanvasLabel,
   nodeDisplayLabel,
@@ -733,144 +734,12 @@ function placeRelationLabel(endX, endY, labelWidth, occupiedLabels) {
   }
 }
 
-function buildRelationRoutes(nodes) {
-  const horizontalNodeOrder = [...graphData.nodes]
-    .sort((left, right) => {
-      const leftSize = nodeDimensions(left);
-      const rightSize = nodeDimensions(right);
-      return left.x + leftSize.width / 2 - (right.x + rightSize.width / 2)
-        || String(left.id).localeCompare(String(right.id));
-    });
-  const nodeOrder = new Map(horizontalNodeOrder.map((node, index) => [node.id, index]));
-  const incomingByTarget = new Map();
-  const outgoingBySource = new Map();
-  graphData.links.forEach(relation => {
-    if (!incomingByTarget.has(relation.to)) incomingByTarget.set(relation.to, []);
-    incomingByTarget.get(relation.to).push(relation);
-    if (!outgoingBySource.has(relation.from)) outgoingBySource.set(relation.from, []);
-    outgoingBySource.get(relation.from).push(relation);
-  });
-  incomingByTarget.forEach(incoming => incoming.sort((left, right) => {
-    const leftNode = nodes.get(left.from);
-    const rightNode = nodes.get(right.from);
-    if (!leftNode || !rightNode) return String(left.id).localeCompare(String(right.id));
-    const leftSize = nodeDimensions(leftNode);
-    const rightSize = nodeDimensions(rightNode);
-    return leftNode.x + leftSize.width / 2 - (rightNode.x + rightSize.width / 2)
-      || String(left.id).localeCompare(String(right.id));
-  }));
-  outgoingBySource.forEach(outgoing => outgoing.sort((left, right) => {
-    const leftNode = nodes.get(left.to);
-    const rightNode = nodes.get(right.to);
-    if (!leftNode || !rightNode) return String(left.id).localeCompare(String(right.id));
-    const leftSize = nodeDimensions(leftNode);
-    const rightSize = nodeDimensions(rightNode);
-    return leftNode.x + leftSize.width / 2 - (rightNode.x + rightSize.width / 2)
-      || String(left.id).localeCompare(String(right.id));
-  }));
-
-  const routes = new Map();
-  const routeBands = new Map();
-  graphData.links.forEach(relation => {
-    const from = nodes.get(relation.from);
-    const to = nodes.get(relation.to);
-    if (!from || !to) return;
-    const fromSize = nodeDimensions(from);
-    const toSize = nodeDimensions(to);
-    const outgoing = outgoingBySource.get(relation.from) || [];
-    const outgoingIndex = outgoing.findIndex(link => link.id === relation.id);
-    const startX = outgoing.length <= 1
-      ? from.x + fromSize.width / 2
-      : from.x + fromSize.width * ((outgoingIndex + 1) / (outgoing.length + 1));
-    const startY = from.y + fromSize.height;
-    const incoming = incomingByTarget.get(relation.to) || [];
-    const incomingIndex = incoming.findIndex(link => link.id === relation.id);
-    const endX = incoming.length <= 1
-      ? to.x + toSize.width / 2
-      : to.x + toSize.width * ((incomingIndex + 1) / (incoming.length + 1));
-    const endY = to.y;
-    // 同层节点允许少量纵向误差，仍归入同一个路由带，给不同股东分配独立轨道。
-    const bandKey = `${Math.round(startY / 80)}:${Math.round(endY / 80)}`;
-    const route = { relation, from, to, startX, startY, endX, endY, bandKey };
-    routes.set(relation.id, route);
-    if (!routeBands.has(bandKey)) routeBands.set(bandKey, []);
-    routeBands.get(bandKey).push(route);
-  });
-
-  routeBands.forEach(bandRoutes => {
-    const orderedRoutes = [...bandRoutes].sort((left, right) =>
-      (nodeOrder.get(left.relation.from) ?? 0) - (nodeOrder.get(right.relation.from) ?? 0)
-      || left.endX - right.endX
-      || String(left.relation.id).localeCompare(String(right.relation.id))
-    );
-    const routeLanes = new Map();
-    const laneIntervals = [];
-
-    orderedRoutes.forEach(route => {
-      const interval = {
-        left: Math.min(route.startX, route.endX),
-        right: Math.max(route.startX, route.endX)
-      };
-      let lane = 0;
-      while (laneIntervals[lane]?.some(existing => !(
-        interval.right + 18 <= existing.left || interval.left >= existing.right + 18
-      ))) lane += 1;
-      if (!laneIntervals[lane]) laneIntervals[lane] = [];
-      laneIntervals[lane].push(interval);
-      routeLanes.set(route.relation.id, lane);
-    });
-
-    const bandStartY = Math.max(...bandRoutes.map(route => route.startY));
-    const bandEndY = Math.min(...bandRoutes.map(route => route.endY));
-    const bandGap = bandEndY - bandStartY;
-    const baseMidY = bandGap > 88
-      ? bandStartY + 38
-      : bandStartY + Math.max(28, bandGap * .5);
-    const maxLane = Math.max(0, ...routeLanes.values());
-    const availableLaneRoom = Math.max(12, bandEndY - 28 - baseMidY);
-    const laneSpacing = maxLane > 0 ? Math.min(38, availableLaneRoom / maxLane) : 0;
-
-    bandRoutes.forEach(route => {
-      route.laneIndex = routeLanes.get(route.relation.id) || 0;
-      route.midY = baseMidY + route.laneIndex * laneSpacing;
-    });
-  });
-
-  const obstacleBoxes = graphData.nodes.map(node => {
+function buildRelationRoutes() {
+  const layoutNodes = graphData.nodes.map(node => {
     const size = nodeDimensions(node);
-    return {
-      id: node.id,
-      left: node.x - 18,
-      right: node.x + size.width + 18,
-      top: node.y - 12,
-      bottom: node.y + size.height + 12
-    };
+    return { ...node, layoutWidth: size.width, layoutHeight: size.height };
   });
-  routes.forEach(route => {
-    const intermediate = obstacleBoxes.filter(box =>
-      box.id !== route.relation.from
-      && box.id !== route.relation.to
-      && box.bottom > route.startY + 12
-      && box.top < route.endY - 12
-    );
-    if (!intermediate.length) {
-      route.pathData = `M ${route.startX} ${route.startY} V ${route.midY} H ${route.endX} V ${route.endY}`;
-      return;
-    }
-    const candidates = [route.startX, route.endX, (route.startX + route.endX) / 2];
-    intermediate.forEach(box => candidates.push(box.left - 18, box.right + 18));
-    const validCandidates = candidates.filter(x => intermediate.every(box => x <= box.left || x >= box.right));
-    const corridorX = (validCandidates.length ? validCandidates : candidates)
-      .sort((left, right) => {
-        const leftCost = Math.abs(left - route.startX) + Math.abs(left - route.endX);
-        const rightCost = Math.abs(right - route.startX) + Math.abs(right - route.endX);
-        return leftCost - rightCost || Math.abs(left - 760) - Math.abs(right - 760);
-      })[0];
-    const targetLaneY = Math.max(route.midY + 24, route.endY - 42 - route.laneIndex * 16);
-    route.pathData = `M ${route.startX} ${route.startY} V ${route.midY} H ${corridorX} V ${targetLaneY} H ${route.endX} V ${route.endY}`;
-  });
-
-  return routes;
+  return calculateEquityRelationRoutes(layoutNodes, graphData.links).routes;
 }
 
 function drawRelation(pathStage, labelStage, relation, route, occupiedLabels) {
@@ -1166,7 +1035,7 @@ function renderGraph() {
   drawWatermarks(stage);
   drawSnapGuides(stage);
   const nodes = nodeMap();
-  const relationRoutes = buildRelationRoutes(nodes);
+  const relationRoutes = buildRelationRoutes();
   const occupiedLabels = [];
   const relationPathStage = createSvgElement('g', { class: 'relation-path-layer' });
   const nodeStage = createSvgElement('g', { class: 'node-layer' });

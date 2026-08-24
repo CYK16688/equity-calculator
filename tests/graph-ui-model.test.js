@@ -21,6 +21,74 @@ function calculateEquityAutoLayout(...args) {
   return graphUiModel.calculateEquityAutoLayout(...args);
 }
 
+function calculateEquityRelationRoutes(...args) {
+  assert.equal(
+    typeof graphUiModel.calculateEquityRelationRoutes,
+    'function',
+    'graph-ui-model should export calculateEquityRelationRoutes(nodes, links, options?)'
+  );
+  return graphUiModel.calculateEquityRelationRoutes(...args);
+}
+
+function relationRoute(result, linkId) {
+  assert.ok(result?.routes instanceof Map, 'routing result.routes should be a Map keyed by link id');
+  const route = result.routes.get(linkId);
+  assert.ok(route, `missing relation route for ${linkId}`);
+  assert.ok(Number.isFinite(route.startX), `${linkId}.startX should be finite`);
+  assert.ok(Number.isFinite(route.endX), `${linkId}.endX should be finite`);
+  assert.equal(typeof route.pathData, 'string', `${linkId}.pathData should be an SVG path string`);
+  assert.ok(route.pathData.length > 0, `${linkId}.pathData should not be empty`);
+  assert.ok(Array.isArray(route.segments), `${linkId}.segments should be an array`);
+  assert.ok(route.segments.length > 0, `${linkId}.segments should not be empty`);
+  assert.ok(Number.isFinite(route.labelAnchor?.x), `${linkId}.labelAnchor.x should be finite`);
+  assert.ok(Number.isFinite(route.labelAnchor?.y), `${linkId}.labelAnchor.y should be finite`);
+
+  route.segments.forEach((segment, index) => {
+    ['x1', 'y1', 'x2', 'y2'].forEach(key => {
+      assert.ok(Number.isFinite(segment?.[key]), `${linkId}.segments[${index}].${key} should be finite`);
+    });
+    assert.ok(
+      segment.x1 === segment.x2 || segment.y1 === segment.y2,
+      `${linkId}.segments[${index}] should be orthogonal`
+    );
+  });
+  return route;
+}
+
+function horizontalSegments(route) {
+  return route.segments.filter(segment => segment.y1 === segment.y2 && segment.x1 !== segment.x2);
+}
+
+function horizontalSegmentsOverlap(left, right) {
+  if (left.y1 !== right.y1) return false;
+  const leftStart = Math.min(left.x1, left.x2);
+  const leftEnd = Math.max(left.x1, left.x2);
+  const rightStart = Math.min(right.x1, right.x2);
+  const rightEnd = Math.max(right.x1, right.x2);
+  return Math.min(leftEnd, rightEnd) - Math.max(leftStart, rightStart) > 0;
+}
+
+function segmentIntersectsRectangleInterior(segment, rectangle) {
+  const left = rectangle.x;
+  const right = rectangle.x + rectangle.width;
+  const top = rectangle.y;
+  const bottom = rectangle.y + rectangle.height;
+
+  if (segment.x1 === segment.x2) {
+    const segmentTop = Math.min(segment.y1, segment.y2);
+    const segmentBottom = Math.max(segment.y1, segment.y2);
+    return segment.x1 > left
+      && segment.x1 < right
+      && Math.min(segmentBottom, bottom) - Math.max(segmentTop, top) > 0;
+  }
+
+  const segmentLeft = Math.min(segment.x1, segment.x2);
+  const segmentRight = Math.max(segment.x1, segment.x2);
+  return segment.y1 > top
+    && segment.y1 < bottom
+    && Math.min(segmentRight, right) - Math.max(segmentLeft, left) > 0;
+}
+
 function layoutPosition(layout, nodeId) {
   assert.ok(layout?.positions instanceof Map, 'layout.positions should be a Map keyed by node id');
   const position = layout.positions.get(nodeId);
@@ -360,4 +428,133 @@ test('auto layout preserves self-loop cycle warnings while still placing the nod
 
   assert.equal(layout.positions.has('self-owned'), true);
   assert.equal(layout.unresolved.has('self-owned'), true);
+});
+
+test('relation routing keeps horizontal tracks distinct for same-level sources with different heights', () => {
+  const nodes = [
+    { id: 'short-source', x: 0, y: 0, width: 180, height: 72 },
+    { id: 'tall-source', x: 260, y: 0, width: 180, height: 148 },
+    { id: 'target', x: 110, y: 340, width: 220, height: 96 }
+  ];
+  const links = [
+    { id: 'short-target', from: 'short-source', to: 'target' },
+    { id: 'tall-target', from: 'tall-source', to: 'target' }
+  ];
+
+  const result = calculateEquityRelationRoutes(nodes, links, { routeGap: 18, nodeClearance: 12 });
+  const shortRoute = relationRoute(result, 'short-target');
+  const tallRoute = relationRoute(result, 'tall-target');
+  const overlaps = horizontalSegments(shortRoute).flatMap(left =>
+    horizontalSegments(tallRoute).filter(right => horizontalSegmentsOverlap(left, right))
+  );
+
+  assert.deepEqual(
+    overlaps,
+    [],
+    'relations from the same business layer must not share any positive-length horizontal segment'
+  );
+});
+
+test('relation routing assigns distinct source ports when one shareholder points to multiple targets', () => {
+  const source = { id: 'shareholder', x: 260, y: 0, width: 240, height: 90 };
+  const nodes = [
+    source,
+    { id: 'target-left', x: 0, y: 300, width: 180, height: 84 },
+    { id: 'target-middle', x: 290, y: 300, width: 180, height: 84 },
+    { id: 'target-right', x: 580, y: 300, width: 180, height: 84 }
+  ];
+  const links = [
+    { id: 'source-left', from: 'shareholder', to: 'target-left' },
+    { id: 'source-middle', from: 'shareholder', to: 'target-middle' },
+    { id: 'source-right', from: 'shareholder', to: 'target-right' }
+  ];
+
+  const result = calculateEquityRelationRoutes(nodes, links);
+  const routes = links.map(link => relationRoute(result, link.id));
+  const startPorts = routes.map(route => route.startX);
+
+  assert.equal(new Set(startPorts).size, links.length, 'each outgoing relation should use a distinct source port');
+  startPorts.forEach(startX => {
+    assert.ok(
+      startX > source.x && startX < source.x + source.width,
+      `source port ${startX} should lie inside the shareholder bottom edge`
+    );
+  });
+  assert.ok(
+    routes[0].startX < routes[1].startX && routes[1].startX < routes[2].startX,
+    'source ports should follow target left-to-right order'
+  );
+});
+
+test('relation routing assigns target ports monotonically by source x position', () => {
+  const target = { id: 'fund', x: 180, y: 340, width: 420, height: 100 };
+  const nodes = [
+    { id: 'source-left', x: 0, y: 0, width: 140, height: 80 },
+    { id: 'source-middle', x: 320, y: 0, width: 140, height: 128 },
+    { id: 'source-right', x: 640, y: 0, width: 140, height: 68 },
+    target
+  ];
+  const links = [
+    { id: 'left-fund', from: 'source-left', to: 'fund' },
+    { id: 'middle-fund', from: 'source-middle', to: 'fund' },
+    { id: 'right-fund', from: 'source-right', to: 'fund' }
+  ];
+
+  const result = calculateEquityRelationRoutes(nodes, links);
+  const endPorts = links.map(link => relationRoute(result, link.id).endX);
+
+  assert.ok(
+    endPorts[0] < endPorts[1] && endPorts[1] < endPorts[2],
+    'target ports should increase strictly with source x position'
+  );
+  endPorts.forEach(endX => {
+    assert.ok(
+      endX > target.x && endX < target.x + target.width,
+      `target port ${endX} should lie inside the fund top edge`
+    );
+  });
+});
+
+test('relation routing detours long cross-layer edges around intermediate node rectangles', () => {
+  const blocker = { id: 'middle-company', x: 220, y: 210, width: 240, height: 120 };
+  const nodes = [
+    { id: 'top-shareholder', x: 270, y: 0, width: 140, height: 80 },
+    blocker,
+    { id: 'bottom-target', x: 250, y: 480, width: 180, height: 90 }
+  ];
+  const links = [
+    { id: 'long-edge', from: 'top-shareholder', to: 'bottom-target' }
+  ];
+
+  const result = calculateEquityRelationRoutes(nodes, links, { nodeClearance: 16 });
+  const route = relationRoute(result, 'long-edge');
+
+  assert.ok(route.segments.length >= 3, 'a blocked long edge should contain a visible orthogonal detour');
+  route.segments.forEach((segment, index) => {
+    assert.equal(
+      segmentIntersectsRectangleInterior(segment, blocker),
+      false,
+      `long-edge segment ${index} must not pass through the intermediate company rectangle`
+    );
+  });
+});
+
+test('relation routing keeps the final target approach below a nearby obstacle', () => {
+  const blocker = { id: 'near-target-blocker', x: 220, y: 400, width: 240, height: 70 };
+  const nodes = [
+    { id: 'source', x: 270, y: 0, width: 140, height: 80 },
+    blocker,
+    { id: 'target', x: 250, y: 500, width: 180, height: 90 }
+  ];
+  const route = relationRoute(calculateEquityRelationRoutes(nodes, [
+    { id: 'source-target', from: 'source', to: 'target' }
+  ], { nodeClearance: 16 }), 'source-target');
+
+  route.segments.forEach((segment, index) => {
+    assert.equal(
+      segmentIntersectsRectangleInterior(segment, blocker),
+      false,
+      `near-target segment ${index} must stay outside the nearby obstacle`
+    );
+  });
 });
