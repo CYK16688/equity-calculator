@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildOwnershipTree,
+  calculateEquityHierarchyLevels,
   graphLayerOrder,
   nodeCanvasLabel,
   nodeDisplayLabel,
@@ -62,4 +63,81 @@ test('ownership tree preserves parent-child branches and marks cycles', () => {
   ]);
   assert.deepEqual(cycle.roots, []);
   assert.deepEqual(cycle.unresolvedIds, ['a', 'b']);
+});
+
+test('equity hierarchy aligns co-investors with the deepest direct shareholder', () => {
+  const nodes = ['top', 'gp', 'new1', 'new2', 'fund'].map(id => ({ id, name: id }));
+  const links = [
+    { id: 'top-gp', from: 'top', to: 'gp' },
+    { id: 'gp-fund', from: 'gp', to: 'fund' },
+    { id: 'new1-fund', from: 'new1', to: 'fund' },
+    { id: 'new2-fund', from: 'new2', to: 'fund' }
+  ];
+
+  const { levels, unresolved } = calculateEquityHierarchyLevels(nodes, links);
+
+  assert.equal(levels.get('top'), 0);
+  assert.equal(levels.get('gp'), 1);
+  assert.equal(levels.get('new1'), 1);
+  assert.equal(levels.get('new2'), 1);
+  assert.equal(levels.get('fund'), 2);
+  assert.deepEqual([...unresolved], []);
+});
+
+test('equity hierarchy keeps a direct-and-indirect shareholder above its holding company', () => {
+  const nodes = ['jack', 'tom', 'fund', 'holdco', 'sam', 'target'].map(id => ({ id, name: id }));
+  const links = [
+    { id: 'jack-holdco', from: 'jack', to: 'holdco' },
+    { id: 'tom-holdco', from: 'tom', to: 'holdco' },
+    { id: 'fund-holdco', from: 'fund', to: 'holdco' },
+    { id: 'holdco-target', from: 'holdco', to: 'target' },
+    { id: 'sam-target', from: 'sam', to: 'target' },
+    { id: 'jack-target', from: 'jack', to: 'target' }
+  ];
+
+  const { levels, unresolved } = calculateEquityHierarchyLevels(nodes, links);
+
+  assert.equal(levels.get('jack'), 0);
+  assert.equal(levels.get('tom'), 0);
+  assert.equal(levels.get('fund'), 0);
+  assert.equal(levels.get('holdco'), 1);
+  assert.equal(levels.get('sam'), 1);
+  assert.equal(levels.get('target'), 2);
+  assert.deepEqual([...unresolved], []);
+});
+
+test('equity hierarchy preserves ordinary branch depth', () => {
+  const nodes = ['A', 'B', 'C', 'D'].map(id => ({ id, name: id }));
+  const links = [
+    { id: 'A-B', from: 'A', to: 'B' },
+    { id: 'A-C', from: 'A', to: 'C' },
+    { id: 'C-D', from: 'C', to: 'D' }
+  ];
+
+  const { levels, unresolved } = calculateEquityHierarchyLevels(nodes, links);
+
+  assert.equal(levels.get('A'), 0);
+  assert.equal(levels.get('B'), 1);
+  assert.equal(levels.get('C'), 1);
+  assert.equal(levels.get('D'), 2);
+  assert.deepEqual([...unresolved], []);
+});
+
+test('equity hierarchy isolates cycle members without marking unrelated nodes unresolved', () => {
+  const nodes = ['cycle-a', 'cycle-b', 'standalone', 'root', 'child'].map(id => ({ id, name: id }));
+  const links = [
+    { id: 'cycle-a-b', from: 'cycle-a', to: 'cycle-b' },
+    { id: 'cycle-b-a', from: 'cycle-b', to: 'cycle-a' },
+    { id: 'root-child', from: 'root', to: 'child' }
+  ];
+
+  const { levels, unresolved } = calculateEquityHierarchyLevels(nodes, links);
+
+  assert.deepEqual([...unresolved].sort(), ['cycle-a', 'cycle-b']);
+  assert.equal(unresolved.has('standalone'), false);
+  assert.equal(unresolved.has('root'), false);
+  assert.equal(unresolved.has('child'), false);
+  assert.equal(levels.get('standalone'), 0);
+  assert.equal(levels.get('root'), 0);
+  assert.equal(levels.get('child'), 1);
 });

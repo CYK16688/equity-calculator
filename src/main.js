@@ -12,6 +12,7 @@ import {
 } from './financing.js';
 import { calculateOwnershipQuery } from './ownership-query.js';
 import {
+  calculateEquityHierarchyLevels,
   graphLayerOrder,
   nodeCanvasLabel,
   nodeDisplayLabel,
@@ -1124,29 +1125,7 @@ function nodeBadge(node) {
 }
 
 function calculateHierarchyLevels() {
-  const indegree = new Map(graphData.nodes.map(node => [node.id, 0]));
-  const outgoing = new Map(graphData.nodes.map(node => [node.id, []]));
-  graphData.links.forEach(link => {
-    if (!indegree.has(link.from) || !indegree.has(link.to)) return;
-    indegree.set(link.to, indegree.get(link.to) + 1);
-    outgoing.get(link.from).push(link.to);
-  });
-
-  const levels = new Map();
-  const processed = new Set();
-  const queue = graphData.nodes.filter(node => indegree.get(node.id) === 0).map(node => node.id);
-  queue.forEach(id => levels.set(id, 0));
-  for (let index = 0; index < queue.length; index += 1) {
-    const id = queue[index];
-    processed.add(id);
-    outgoing.get(id).forEach(childId => {
-      levels.set(childId, Math.max(levels.get(childId) || 0, (levels.get(id) || 0) + 1));
-      indegree.set(childId, indegree.get(childId) - 1);
-      if (indegree.get(childId) === 0) queue.push(childId);
-    });
-  }
-  const unresolved = new Set(graphData.nodes.filter(node => !processed.has(node.id)).map(node => node.id));
-  return { levels, unresolved };
+  return calculateEquityHierarchyLevels(graphData.nodes, graphData.links);
 }
 
 function createNodeListItem(node, treeItem = false) {
@@ -2103,23 +2082,10 @@ function deleteSelectedNode() {
 function autoLayout() {
   if (!graphData.nodes.length) return;
   commit('已自动整理图谱布局', () => {
-    const incoming = new Map(graphData.nodes.map(node => [node.id, []]));
-    graphData.links.forEach(link => incoming.get(link.to)?.push(link.from));
-    const levels = new Map();
-    graphData.nodes.filter(node => incoming.get(node.id)?.length === 0).forEach(node => levels.set(node.id, 0));
-    if (!levels.size && graphData.nodes[0]) levels.set(graphData.nodes[0].id, 0);
-    for (let pass = 0; pass < graphData.nodes.length; pass += 1) {
-      graphData.links.forEach(link => {
-        if (!levels.has(link.from)) return;
-        levels.set(link.to, Math.max(levels.get(link.to) ?? 0, levels.get(link.from) + 1));
-      });
-    }
-    graphData.nodes.forEach(node => {
-      if (!levels.has(node.id)) levels.set(node.id, 0);
-    });
+    const { levels } = calculateHierarchyLevels();
     const groups = new Map();
     graphData.nodes.forEach(node => {
-      const level = levels.get(node.id);
+      const level = levels.get(String(node.id)) || 0;
       if (!groups.has(level)) groups.set(level, []);
       groups.get(level).push(node);
     });

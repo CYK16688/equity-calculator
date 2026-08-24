@@ -55,6 +55,106 @@ export function graphLayerOrder(relationPathLayer, nodeLayer, relationLabelLayer
   return [relationPathLayer, nodeLayer, relationLabelLayer];
 }
 
+export function calculateEquityHierarchyLevels(nodes, links) {
+  const nodeIds = (Array.isArray(nodes) ? nodes : [])
+    .map(node => String(node?.id || ''))
+    .filter(Boolean);
+  const nodeSet = new Set(nodeIds);
+  const validLinks = (Array.isArray(links) ? links : [])
+    .map(link => ({ ...link, from: String(link?.from || ''), to: String(link?.to || '') }))
+    .filter(link => nodeSet.has(link.from) && nodeSet.has(link.to));
+
+  const adjacency = new Map(nodeIds.map(id => [id, new Set()]));
+  const selfLoops = new Set();
+  validLinks.forEach(link => {
+    if (link.from === link.to) selfLoops.add(link.from);
+    else adjacency.get(link.from).add(link.to);
+  });
+
+  // Collapse cycles, then calculate an earliest valid hierarchy on the resulting DAG.
+  let traversalIndex = 0;
+  const indices = new Map();
+  const lowLinks = new Map();
+  const stack = [];
+  const onStack = new Set();
+  const components = [];
+  const visit = nodeId => {
+    indices.set(nodeId, traversalIndex);
+    lowLinks.set(nodeId, traversalIndex);
+    traversalIndex += 1;
+    stack.push(nodeId);
+    onStack.add(nodeId);
+    adjacency.get(nodeId).forEach(nextId => {
+      if (!indices.has(nextId)) {
+        visit(nextId);
+        lowLinks.set(nodeId, Math.min(lowLinks.get(nodeId), lowLinks.get(nextId)));
+      } else if (onStack.has(nextId)) {
+        lowLinks.set(nodeId, Math.min(lowLinks.get(nodeId), indices.get(nextId)));
+      }
+    });
+    if (lowLinks.get(nodeId) !== indices.get(nodeId)) return;
+    const component = [];
+    let member;
+    do {
+      member = stack.pop();
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== nodeId);
+    components.push(component);
+  };
+  nodeIds.forEach(nodeId => {
+    if (!indices.has(nodeId)) visit(nodeId);
+  });
+
+  const componentByNode = new Map();
+  components.forEach((component, index) => component.forEach(nodeId => componentByNode.set(nodeId, index)));
+  const componentEdges = new Map(components.map((_, index) => [index, new Set()]));
+  const indegree = new Map(components.map((_, index) => [index, 0]));
+  adjacency.forEach((targets, fromNode) => {
+    const fromComponent = componentByNode.get(fromNode);
+    targets.forEach(toNode => {
+      const toComponent = componentByNode.get(toNode);
+      if (fromComponent === toComponent || componentEdges.get(fromComponent).has(toComponent)) return;
+      componentEdges.get(fromComponent).add(toComponent);
+      indegree.set(toComponent, indegree.get(toComponent) + 1);
+    });
+  });
+
+  const componentLevels = new Map();
+  const topologicalOrder = [...indegree.entries()].filter(([, degree]) => degree === 0).map(([index]) => index);
+  topologicalOrder.forEach(index => componentLevels.set(index, 0));
+  for (let index = 0; index < topologicalOrder.length; index += 1) {
+    const componentId = topologicalOrder[index];
+    componentEdges.get(componentId).forEach(nextId => {
+      componentLevels.set(nextId, Math.max(
+        componentLevels.get(nextId) || 0,
+        (componentLevels.get(componentId) || 0) + 1
+      ));
+      indegree.set(nextId, indegree.get(nextId) - 1);
+      if (indegree.get(nextId) === 0) topologicalOrder.push(nextId);
+    });
+  }
+
+  // Move each shareholder group as close as possible to its investees. This is
+  // what aligns short and long ownership branches without breaking ancestry.
+  [...topologicalOrder].reverse().forEach(componentId => {
+    const targets = [...componentEdges.get(componentId)];
+    if (!targets.length) return;
+    const latestValidLevel = Math.min(...targets.map(targetId => componentLevels.get(targetId) - 1));
+    componentLevels.set(componentId, Math.max(componentLevels.get(componentId), latestValidLevel));
+  });
+
+  const levels = new Map();
+  const unresolved = new Set();
+  nodeIds.forEach(nodeId => {
+    const componentId = componentByNode.get(nodeId);
+    levels.set(nodeId, componentLevels.get(componentId) || 0);
+    const component = components[componentId];
+    if (component.length > 1 || selfLoops.has(nodeId)) unresolved.add(nodeId);
+  });
+  return { levels, unresolved };
+}
+
 export function buildOwnershipTree(nodes, links, matchedIds = null) {
   const orderedNodes = Array.isArray(nodes) ? nodes : [];
   const nodeById = new Map(orderedNodes.map(node => [String(node.id), node]));
