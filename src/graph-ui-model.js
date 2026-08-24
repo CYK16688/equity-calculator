@@ -43,6 +43,18 @@ export function nodeCanvasLabel(nodes, node) {
   return duplicateCount > 1 ? `${name} · #${shortNodeIdentity(node)}` : name;
 }
 
+export function nodeTypePresentation(node) {
+  const type = String(node?.type || '').trim();
+  if (type.includes('目标')) return { icon: '标', label: '目标企业', tone: 'target' };
+  if (type.includes('自然人') || type.includes('个人')) return { icon: '人', label: '自然人', tone: 'person' };
+  if (type.includes('平台')) return { icon: '平', label: '持股平台', tone: 'platform' };
+  if (type.includes('基金') || type.includes('合伙')) return { icon: '基', label: '基金/合伙', tone: 'fund' };
+  if (type.includes('企业') || type.includes('公司') || type.includes('股东')) {
+    return { icon: '企', label: '企业', tone: 'company' };
+  }
+  return { icon: '主', label: '其他主体', tone: 'other' };
+}
+
 export function zoomInScale(scale) {
   return Number(scale) * ZOOM_STEP;
 }

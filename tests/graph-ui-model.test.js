@@ -7,6 +7,7 @@ import {
   graphLayerOrder,
   nodeCanvasLabel,
   nodeDisplayLabel,
+  nodeTypePresentation,
   suggestUniqueNodeName,
   zoomInScale,
   zoomOutScale
@@ -156,6 +157,17 @@ test('canvas labels preserve explicit line breaks while list labels stay single-
   const node = { id: 'node-multiline', name: '第一行公司\n第二行名称', code: '' };
   assert.equal(nodeCanvasLabel([node], node), '第一行公司\n第二行名称');
   assert.equal(nodeDisplayLabel([node], node), '第一行公司 第二行名称');
+});
+
+test('subject type badges describe entity type instead of upstream or downstream position', () => {
+  assert.deepEqual(nodeTypePresentation({ type: '自然人股东', root: true }), {
+    icon: '人', label: '自然人', tone: 'person'
+  });
+  assert.equal(nodeTypePresentation({ type: '企业股东' }).icon, '企');
+  assert.equal(nodeTypePresentation({ type: '控股子公司' }).icon, '企');
+  assert.equal(nodeTypePresentation({ type: '控股平台' }).icon, '平');
+  assert.equal(nodeTypePresentation({ type: '基金 / 合伙企业' }).icon, '基');
+  assert.equal(nodeTypePresentation({ type: '目标企业' }).icon, '标');
 });
 
 test('zoom in and out are reciprocal', () => {

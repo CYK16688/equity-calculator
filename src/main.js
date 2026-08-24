@@ -18,6 +18,7 @@ import {
   graphLayerOrder,
   nodeCanvasLabel,
   nodeDisplayLabel,
+  nodeTypePresentation,
   suggestUniqueNodeName,
   zoomInScale,
   zoomOutScale
@@ -1054,14 +1055,6 @@ function renderGraph() {
   positionInlineRelationEditor();
 }
 
-function nodeBadge(node) {
-  if (node.root) return '中心';
-  if (node.type.includes('自然人')) return '个人';
-  if (node.type.includes('股东') || node.type.includes('平台')) return '上游';
-  if (node.type.includes('子公司')) return '下游';
-  return '主体';
-}
-
 function calculateHierarchyLevels() {
   return calculateEquityHierarchyLevels(graphData.nodes, graphData.links);
 }
@@ -1069,15 +1062,16 @@ function calculateHierarchyLevels() {
 function createNodeListItem(node, treeItem = false) {
   const ownership = getOwnershipSummary(node.id);
   const presentation = getOwnershipPresentation(node, ownership);
+  const typePresentation = nodeTypePresentation(node);
   const item = document.createElement('button');
   item.type = 'button';
   item.className = `node-list-item${treeItem ? ' tree-item' : ''}${selected?.kind === 'node' && selected.id === node.id ? ' active' : ''}${ownership.error ? ' ownership-error' : ''}${ownership.warning ? ' ownership-warning' : ''}`;
   item.dataset.nodeId = node.id;
   if (ownership.error || ownership.warning) item.title = presentation.text;
   item.innerHTML = `
-    <span class="list-node-icon ${node.root ? 'root' : ''}">${nodeBadge(node).slice(0, 1)}</span>
+    <span class="list-node-icon ${node.root ? 'root' : ''}" aria-label="${escapeHtml(typePresentation.label)}">${typePresentation.icon}</span>
     <span class="list-node-copy"><strong>${escapeHtml(nodeDisplayLabel(graphData.nodes, node))}</strong><small>${escapeHtml(node.type || '其他主体')}</small></span>
-    <span class="list-node-badge">${ownership.error ? '股权错误' : (ownership.warning ? '类型待核' : nodeBadge(node))}</span>
+    <span class="list-node-badge">${ownership.error ? '股权错误' : (ownership.warning ? '类型待核' : escapeHtml(typePresentation.label))}</span>
   `;
   item.addEventListener('click', () => selectNode(node.id));
   return item;
