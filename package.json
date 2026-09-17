@@ -1,0 +1,21 @@
+{
+  "name": "relation-graph-startup-for-web-component",
+  "version": "0.0.1",
+  "description": "可本地运行的企业股权结构图编辑器，支持权益穿透与融资稀释测算",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 3000",
+    "start": "vite --host 0.0.0.0 --port 3000",
+    "test": "node --test",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 3000"
+  },
+  "dependencies": {
+    "@relation-graph/web-components": "^3.0.0"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0"
+  }
+}
