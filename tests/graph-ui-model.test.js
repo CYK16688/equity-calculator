@@ -184,11 +184,11 @@ function edgeCrossingCount(layout, links) {
 test('quick-add names remain unique and duplicate labels expose an identity', () => {
   const nodes = [
     { id: 'node-first-abc123', name: '新子公司', code: '' },
-    { id: 'node-second-def456', name: '新子公司', code: '9133' }
+    { id: 'node-second-def456', name: '新子公司', code: 'DEMO-CODE-002' }
   ];
   assert.equal(suggestUniqueNodeName(nodes, '新子公司'), '新子公司 2');
   assert.equal(nodeDisplayLabel(nodes, nodes[0]), '新子公司 · #abc123');
-  assert.equal(nodeDisplayLabel(nodes, nodes[1]), '新子公司 · #9133');
+  assert.equal(nodeDisplayLabel(nodes, nodes[1]), '新子公司 · #DEMO-CODE-002');
 });
 
 test('canvas labels preserve explicit line breaks while list labels stay single-line', () => {

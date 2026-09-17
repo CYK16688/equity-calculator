@@ -2,7 +2,23 @@
 
 一个可在浏览器本地运行的企业股权结构图编辑器。它面向股权研究、投融资分析和内部数据整理场景，帮助你把股东、目标企业、子公司及其持股关系整理成可编辑的关系图。
 
-项目默认使用示例数据启动，所有编辑数据默认保存在当前浏览器的本机存储中，不需要后端服务或账号。
+项目默认使用完全虚构的演示数据启动，所有编辑数据默认保存在当前浏览器的本机存储中，不需要后端服务或账号。
+
+## 界面截图
+
+默认股权结构总览：
+
+![股权结构图总览](docs/screenshots/equity-calculator-overview.png)
+
+权益穿透查询：
+
+![权益穿透查询](docs/screenshots/equity-calculator-query.png)
+
+主体属性、股权校验与自动穿透结果：
+
+![主体属性与自动计算](docs/screenshots/equity-calculator-inspector.png)
+
+截图只使用仓库内的合成演示数据，不包含真实企业或个人资料。
 
 ## 功能
 
@@ -49,7 +65,15 @@ npm run preview
 - 数据保存在浏览器的 `localStorage`，清理浏览器站点数据会删除本地文档。
 - 使用“导出 JSON”保存可迁移的数据文件，使用“导入 JSON”恢复文档。
 - 项目不会把图谱数据发送到服务器；图片导出在浏览器本地完成。
-- `src/equity-data.js` 中的示例数据仅用于演示交互，可直接替换为自己的示例数据。
+- `src/equity-data.js` 中的示例数据是合成数据，仅用于演示交互，可直接替换为自己的示例数据。
+
+## 隐私与公开范围
+
+- 仓库不应包含真实企业股权资料、个人信息、未公开商业数据、访问令牌、密码或本地构建产物。
+- 应用没有后端接口、账号系统或遥测逻辑；用户输入的数据只保存在当前浏览器中，只有在用户主动导出时才会生成文件。
+- 导出的 JSON 可能包含用户录入的敏感信息。请在分享、提交 Issue 或 Pull Request 前先脱敏，不要把真实数据文件提交到仓库。
+- 开发服务器和预览服务器默认只监听本机回环地址，避免无意中向局域网暴露本地数据。
+- 公开发布前应检查暂存区内容和提交记录，确认没有邮箱、密钥、绝对路径或其他不应公开的信息。
 
 ## 开发命令
 
@@ -59,14 +83,30 @@ npm run build  # 执行 Vite 生产构建
 npm run dev    # 启动本地开发服务器
 ```
 
-提交改动前请至少运行 `npm test` 和 `npm run build`。更多协作约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+提交改动前请至少运行 `npm test` 和 `npm run build`。更多协作约定见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全与隐私注意事项见 [SECURITY.md](SECURITY.md)。
 
 ## 技术栈
 
 - 原生 JavaScript、HTML、CSS
 - [Vite](https://vitejs.dev/)
-- [@relation-graph/web-components](https://github.com/relation-graph/relation-graph)
 - Node.js 内置测试运行器
+
+## 项目来源与第三方依赖
+
+### 项目来源
+
+本项目早期以 RelationGraph 的 [relation-graph-startup-for-web-component](https://github.com/relation-graph/relation-graph-startup-for-web-component) 作为工程起点，并参考了 [RelationGraph](https://github.com/relation-graph/relation-graph) 的 Web Component 接入方式。当前版本已改为项目内的 SVG 图谱渲染和计算逻辑，源码不再直接加载 `@relation-graph/web-components`；保留上游链接和归属说明，便于追溯项目来源。
+
+### 当前直接依赖
+
+| 项目 | 类型 | 用途 | 许可证 |
+| --- | --- | --- | --- |
+| [Vite](https://github.com/vitejs/vite) | 开发依赖 | 本地开发服务器、生产构建和预览 | MIT |
+| [Node.js](https://nodejs.org/) | 开发工具链 | 运行内置测试运行器和 npm 脚本 | Node.js 许可证 |
+
+应用运行时只使用浏览器原生的 DOM、SVG、File、Blob 和 `localStorage` API，没有额外的生产 npm 依赖。Vite 的传递依赖及其许可证以 [package-lock.json](package-lock.json) 为准，主要包和上游归属见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+当前编辑器的图谱交互、计算逻辑和界面样式主要位于本项目的 `src/` 目录。使用或分发早期上游代码时，请同时遵守上游项目随附的许可证和版权声明。
 
 ## 使用许可与商业授权
 
@@ -76,7 +116,7 @@ npm run dev    # 启动本地开发服务器
 - 商业使用、销售、收费服务、SaaS/托管服务、商业再分发，或将本项目集成到商业产品中，必须事先取得版权所有者的书面授权。
 - 商业授权申请：`https://github.com/CYK16688/equity-calculator/discussions`。
 
-“开源”与“禁止商业使用”在严格定义上互相冲突；当前许可选择优先满足商业授权要求。第三方依赖仍受其各自许可证约束；当前运行时依赖 `@relation-graph/web-components` 使用 MIT License。
+“开源”与“禁止商业使用”在严格定义上互相冲突；当前许可选择优先满足商业授权要求。第三方依赖仍受其各自许可证约束；当前应用运行时不依赖第三方 npm 包。
 
 ## 免责声明
 
