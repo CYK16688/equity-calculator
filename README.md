@@ -4,6 +4,20 @@
 
 项目默认使用示例数据启动，所有编辑数据默认保存在当前浏览器的本机存储中，不需要后端服务或账号。
 
+## 界面截图
+
+默认股权结构总览：
+
+![股权结构图总览](docs/screenshots/equity-calculator-overview.png)
+
+权益穿透查询：
+
+![权益穿透查询](docs/screenshots/equity-calculator-query.png)
+
+主体属性、股权校验与自动穿透结果：
+
+![主体属性与自动计算](docs/screenshots/equity-calculator-inspector.png)
+
 ## 功能
 
 - 可视化新增、编辑和删除主体及持股关系
@@ -65,8 +79,17 @@ npm run dev    # 启动本地开发服务器
 
 - 原生 JavaScript、HTML、CSS
 - [Vite](https://vitejs.dev/)
-- [@relation-graph/web-components](https://github.com/relation-graph/relation-graph)
 - Node.js 内置测试运行器
+
+## 依托项目与第三方依赖
+
+本项目使用并声明了以下开源项目或工具：
+
+- [`@relation-graph/web-components`](https://github.com/relation-graph/relation-graph)：`package.json` 中声明的 npm 依赖，当前锁定版本为 `3.0.13`，采用 MIT License。上游项目由 RelationGraph 社区维护。
+- [`Vite`](https://github.com/vitejs/vite)：本地开发服务器和生产构建工具，采用 MIT License。
+- [`Node.js`](https://nodejs.org/)：运行测试脚本和 npm 工具链；Node.js 本身及其组件受各自许可证约束。
+
+当前编辑器的图谱交互、计算逻辑和界面样式主要位于本项目的 `src/` 目录，第三方依赖的版本和完整依赖树以 `package.json` 与 `package-lock.json` 为准。本项目没有修改或重新发布上游项目的源代码；使用上游项目时请同时遵守其许可证和版权声明。
 
 ## 使用许可与商业授权
 
