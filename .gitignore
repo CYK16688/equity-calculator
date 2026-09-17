@@ -5,3 +5,13 @@ dist
 .playwright-cli/
 official/
 /output/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+playwright-report/
+test-results/
+*.pem
+*.key
+credentials*.json
