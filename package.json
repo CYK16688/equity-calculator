@@ -2,7 +2,7 @@
   "name": "equity-calculator",
   "version": "0.1.0",
   "description": "可本地运行的企业股权结构图编辑器，支持权益穿透与融资稀释测算",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "repository": {
     "type": "git",
